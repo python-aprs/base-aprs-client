@@ -42,7 +42,7 @@ class APRSISSimulator(threading.Thread):
         print(message)
         self.forward(writer, addr, message)
         while True:
-            data = await reader.read(256)
+            data = await reader.read(4096)
             if not data:  # EOF
                 break
             data, found_comment, comment = data.partition(b"#")

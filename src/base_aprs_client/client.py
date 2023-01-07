@@ -41,6 +41,13 @@ class Client:
     def _next_message_sequence_number_default(self):
         return random.randint(0, SEQ_NUM_MAX)
 
+    def _burn_message_sequence_number(self) -> bytes:
+        number = b"%x" % self.next_message_sequence_number
+        self.next_message_sequence_number = (
+            self.next_message_sequence_number + 1
+        ) % SEQ_NUM_MAX
+        return number
+
     def read(
         self,
         min_frames: t.Optional[int] = -1,
@@ -82,13 +89,20 @@ class Client:
         overflow: OverflowDisposition = OverflowDisposition.Truncate,
     ) -> t.Optional[MessageAckFuture]:
         if ack:
-            number = b"%x" % self.next_message_sequence_number
+            number = self._burn_message_sequence_number()
             self.outstanding_messages[number] = MessageAckFuture(
                 loop=self.sync_frame_io.loop
             )
-            self.next_message_sequence_number += 1
         else:
             number = None
+        if overflow == OverflowDisposition.Continue and len(body) > 67:
+
+            def _chunk(message, sz=67):
+                while message:
+                    chunk, message = message[:sz], message[sz:]
+                    yield self.send_message(recipient, body=chunk, ack=ack)
+
+            return [f for f in _chunk(body)]
         frame = self.send_frame(
             info=Message(
                 raw=b"",
