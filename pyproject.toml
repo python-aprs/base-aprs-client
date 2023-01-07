@@ -1,0 +1,36 @@
+[build-system]
+requires = [
+    "setuptools>=61",
+    "setuptools_scm[toml]>=6.2",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "base-aprs-client"
+description = "Base layer for building more complex APRS interactions with python."
+authors = [
+    {name = "Masen Furer KF7HVM", email = "kf7hvm@0x26.net"},
+]
+dependencies = [
+    "aprs3 >= 8.0.0",
+    "attrs > 20",
+    "importlib-metadata >= 1.4",
+]
+readme = "README.md"
+license = {file = "LICENSE"}
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Communications :: Ham Radio",
+    "Programming Language :: Python",
+    "License :: OSI Approved :: Apache Software License"
+]
+keywords=[
+    'Ham Radio', 'APRS',
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/python-aprs/base-aprs-client"
+
+[tool.setuptools_scm]
