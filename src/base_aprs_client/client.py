@@ -48,10 +48,15 @@ class Client:
         return self.sync_frame_io.read(callback=self.on_frame, min_frames=min_frames)
 
     def on_message(self, message: Message, frame: APRSFrame) -> None:
-        pass
+        if message.number:
+            self.send_message(frame.source, "ack{}".format(message.number.decode()))
+        if message.text.startswith(b"ack") or message.text.startswith(b"rej"):
+            future = self.outstanding_messages.get(message.text[3:])
+            if future:
+                future.set_result(frame)
 
     def on_frame(self, frame: APRSFrame) -> None:
-        print(frame)
+        print("rx: {}".format(frame))
         if isinstance(frame.info, Message) and frame.info.addressee.decode() == str(
             self.mycall
         ):
@@ -75,7 +80,15 @@ class Client:
         body: str,
         ack: bool = False,
         overflow: OverflowDisposition = OverflowDisposition.Truncate,
-    ) -> MessageAckFuture:
+    ) -> t.Optional[MessageAckFuture]:
+        if ack:
+            number = b"%x" % self.next_message_sequence_number
+            self.outstanding_messages[number] = MessageAckFuture(
+                loop=self.sync_frame_io.loop
+            )
+            self.next_message_sequence_number += 1
+        else:
+            number = None
         frame = self.send_frame(
             info=Message(
                 raw=b"",
@@ -83,8 +96,10 @@ class Client:
                 data=b"",
                 addressee=str(recipient).encode(),
                 text=body.encode(),
+                number=number,
             ),
         )
+        return self.outstanding_messages.get(number)
 
     def send_status(self, status: str) -> APRSFrame:
         return self.send_frame(
