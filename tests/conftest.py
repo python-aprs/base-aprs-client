@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import threading
 import traceback
 
@@ -13,9 +14,10 @@ from base_aprs_client import Client
 class APRSISSimulator(threading.Thread):
     """Simulate APRS-IS for unit testing."""
 
-    writers = attrs.field(factory=list)
+    host = attrs.field(default="127.0.0.1")
     port = attrs.field(default=14588)
     server = attrs.field(default=False)
+    writers = attrs.field(factory=list)
 
     def __attrs_post_init__(self):
         super().__init__()
@@ -35,7 +37,7 @@ class APRSISSimulator(threading.Thread):
         self.server.close()
 
     async def handle(self, reader, writer):
-        addr = writer.get_extra_info('peername')
+        addr = writer.get_extra_info("peername")
         message = f"{addr!r} is connected !!!!"
         print(message)
         self.forward(writer, addr, message)
@@ -66,11 +68,11 @@ class APRSISSimulator(threading.Thread):
     async def _run(self):
         self.server = await asyncio.start_server(
             self._handle,
-            '127.0.0.1',
+            self.host,
             self.port,
         )
         addr = self.server.sockets[0].getsockname()
-        print(f'Serving on {addr}')
+        print(f"Serving on {addr}")
         async with self.server:
             await self.server.start_serving()
             while self.server.sockets:
@@ -80,10 +82,24 @@ class APRSISSimulator(threading.Thread):
         asyncio.run(self._run())
 
 
+def socket_ping(ip, port, timeout=0.1):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((ip, port))
+        s.close()
+        return True
+    except socket.error:
+        return False
+
+
 @pytest.fixture
 def server():
     s = APRSISSimulator()
     s.start()
+    # busy loop until the socket is open
+    while not socket_ping(s.host, s.port):
+        pass
     yield s
     if s.server:
         s.close()
