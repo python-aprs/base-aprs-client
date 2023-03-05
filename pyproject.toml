@@ -16,6 +16,7 @@ dependencies = [
     "aprs3 >= 8.0.0",
     "attrs > 20",
     "importlib-metadata >= 1.4",
+    "sqlmodel == 0.0.8",
 ]
 readme = "README.md"
 license = {file = "LICENSE"}

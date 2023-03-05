@@ -74,14 +74,18 @@ class APRSISSimulator(threading.Thread):
             if not data:  # EOF
                 break
             data, found_comment, comment = data.partition(b"#")
-            self._forward(writer, addr, data)
-            await writer.drain()
             message = data.decode().strip()
+            if message.startswith("user "):
+                _, _, username = message.partition(" ")
+                logger.info("{} logs in",format(username.strip()))
+                continue
             if message == "exit":
                 message = f"{addr!r} wants to close the connection."
                 logger.info(message)
                 self._forward(writer, "Server", message)
                 break
+            self._forward(writer, addr, data)
+            await writer.drain()
 
     async def _handle_connection(self, reader, writer):
         self.writers.append(writer)
@@ -135,3 +139,8 @@ def socket_ping(ip, port, timeout=0.1):
         return True
     except socket.error:
         return False
+
+
+if __name__ == "__main__":
+    with APRSISSimulator() as sim:
+        sim.join()
