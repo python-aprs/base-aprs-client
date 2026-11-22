@@ -1,3 +1,11 @@
+"""APRS station behaviour for applications.
+
+``Client`` sends messages with optional acknowledgement and retry, acks
+incoming messages addressed to ``mycall``, and sends status and position
+reports over any ``aprs`` transport. ``APRSISSimulator`` is a local
+APRS-IS-like relay for testing without a radio.
+"""
+
 from importlib.metadata import version
 
 from .client import Client
