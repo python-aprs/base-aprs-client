@@ -55,10 +55,29 @@ with APRSISSimulator() as sim:
 
 Run it standalone on port 14588 with `python -m base_aprs_client.simulator`.
 
+## Packet log and send queue
+
+`base_aprs_client.store.PacketStore` keeps a log of frames heard and sent,
+and a queue of frames to transmit later. It uses SQLAlchemy 2.0 with an
+async session, so it never blocks the event loop; SQLite through aiosqlite
+is the default, and any async SQLAlchemy URL works. Install with
+`pip install base-aprs-client[db]`.
+
+```python
+from base_aprs_client.store import PacketStore
+
+async with PacketStore("sqlite+aiosqlite:///N0CALL.db") as store:
+    await store.record_received(frame)
+    await store.schedule(reply, delay=10)
+    for record in await store.due():
+        if await store.claim(record):  # False if another task already sent it
+            transport.write(record.frame)
+```
+
 ## Development
 
 ```
-uv sync
+uv sync --all-extras
 uv run pytest
 ```
 
