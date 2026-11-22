@@ -40,6 +40,14 @@ def _as_utc(when: datetime.datetime) -> datetime.datetime:
     return when.astimezone(datetime.UTC)
 
 
+def _due(delay: float | datetime.timedelta, at: datetime.datetime | None):
+    if at is not None:
+        return _as_utc(at)
+    if not isinstance(delay, datetime.timedelta):
+        delay = datetime.timedelta(seconds=delay)
+    return utcnow() + delay
+
+
 class PacketState(enum.Enum):
     RECEIVED = "received"
     QUEUED = "queued"
@@ -107,8 +115,17 @@ class PacketStore:
             await store.record_received(frame)
             await store.schedule(reply, delay=10)
             for record in await store.due():
-                transmit(record.frame)
-                await store.mark_sent(record)
+                if not await store.claim(record):
+                    continue  # another sender took it
+                try:
+                    transmit(record.frame)
+                except OSError as exc:
+                    await store.mark_error(record, str(exc))
+                    await store.requeue(record, delay=30)  # optional retry
+
+    Claiming before transmitting means a frame is sent at most once per
+    record, even with several senders; a failed transmit is then marked
+    ERROR and can be queued again with ``requeue``.
     """
 
     def __init__(
@@ -170,15 +187,13 @@ class PacketStore:
         at: datetime.datetime | None = None,
     ) -> PacketRecord:
         """Queue ``frame`` for transmission ``delay`` seconds from now, or ``at``."""
-        now = utcnow()
-        if at is not None:
-            due = _as_utc(at)
-        else:
-            if not isinstance(delay, datetime.timedelta):
-                delay = datetime.timedelta(seconds=delay)
-            due = now + delay
         return await self._add(
-            PacketRecord(tnc2=str(frame), state=PacketState.QUEUED, created=now, due=due)
+            PacketRecord(
+                tnc2=str(frame),
+                state=PacketState.QUEUED,
+                created=utcnow(),
+                due=_due(delay, at),
+            )
         )
 
     async def due(self, now: datetime.datetime | None = None) -> Sequence[PacketRecord]:
@@ -209,23 +224,26 @@ class PacketStore:
             return (await session.scalars(stmt)).all()
 
     async def _transition(
-        self, record: PacketRecord | int, state: PacketState, **values
+        self,
+        record: PacketRecord | int,
+        state: PacketState,
+        *conditions,
+        **values,
     ) -> bool:
         """
-        Move a QUEUED record to ``state``.
+        Move a queue record to ``state`` if it still matches ``conditions``.
 
-        Returns False if the record was no longer queued (already sent or
-        cancelled by a concurrent caller), so a frame is sent at most once
-        per record.
+        Defaults to records that are still QUEUED. Returns False if the record
+        no longer matches (e.g. already sent or cancelled by a concurrent
+        caller), so a frame is sent at most once per record.
         """
         record_id = record if isinstance(record, int) else record.id
+        if not conditions:
+            conditions = (PacketRecord.state == PacketState.QUEUED,)
         async with self.session() as session:
             result = await session.execute(
                 update(PacketRecord)
-                .where(
-                    PacketRecord.id == record_id,
-                    PacketRecord.state == PacketState.QUEUED,
-                )
+                .where(PacketRecord.id == record_id, *conditions)
                 .values(state=state, **values)
                 .execution_options(synchronize_session=False)
             )
@@ -246,7 +264,41 @@ class PacketStore:
         return await self._transition(record, PacketState.CANCELLED)
 
     async def mark_error(self, record: PacketRecord | int, error: str) -> bool:
-        return await self._transition(record, PacketState.ERROR, error=error)
+        """
+        Record that a queued frame could not be sent.
+
+        Works on a record that is still QUEUED, or one that was claimed (SENT)
+        and then failed to transmit. Frames logged with ``record_sent`` were
+        never queued and are not affected.
+        """
+        return await self._transition(
+            record,
+            PacketState.ERROR,
+            PacketRecord.state.in_([PacketState.QUEUED, PacketState.SENT]),
+            PacketRecord.due.is_not(None),
+            error=error,
+        )
+
+    async def requeue(
+        self,
+        record: PacketRecord | int,
+        delay: float | datetime.timedelta = 0.0,
+        at: datetime.datetime | None = None,
+    ) -> bool:
+        """
+        Queue a failed (ERROR) record again, ``delay`` seconds from now or ``at``.
+
+        Clears ``error`` and ``sent``. Returns False if the record is not in
+        ERROR.
+        """
+        return await self._transition(
+            record,
+            PacketState.QUEUED,
+            PacketRecord.state == PacketState.ERROR,
+            due=_due(delay, at),
+            error=None,
+            sent=None,
+        )
 
     async def history(
         self,
