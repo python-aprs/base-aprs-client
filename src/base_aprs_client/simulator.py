@@ -94,6 +94,10 @@ class APRSISSimulator:
     async def _handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        if self._stopped is not None and self._stopped.is_set():
+            # accepted just as the server stopped: don't keep it open
+            writer.close()
+            return
         self._writers.append(writer)
         try:
             await self._handle_client(reader, writer)
@@ -117,6 +121,7 @@ class APRSISSimulator:
         self._started.set()
         async with self._server:
             await self._stopped.wait()
+            self._server.close()  # stop accepting before closing connections
             for writer in list(self._writers):
                 writer.close()
 
