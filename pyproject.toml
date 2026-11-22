@@ -14,7 +14,9 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "aprs3 >= 8.1.0a0",
+    "aprs3 >= 8.1.0",
+    "ax253 >= 0.2.0",
+    "kiss3 >= 8.1.0",
     "attrs > 20",
 ]
 readme = "README.md"
@@ -48,10 +50,6 @@ db = [
 
 [dependency-groups]
 dev = [
-    # aprs3 8.1.0a0 needs these pre-releases; naming them here lets uv pick
-    # them (pip already does). Drop once they have stable releases.
-    "ax253>=0.2.0a0",
-    "kiss3>=8.1.0a0",
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5",
