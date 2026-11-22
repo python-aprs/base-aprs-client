@@ -27,6 +27,7 @@ It works over APRS-IS, KISS-over-TCP (e.g. Dire Wolf) or a serial KISS TNC.
 import asyncio
 from base_aprs_client import AsyncClient
 
+
 async def main():
     async with AsyncClient.aprsis(
         "N0CALL-1",
@@ -37,6 +38,7 @@ async def main():
         await client.send_message("N0CALL-2", "hi", ack=True)  # waits for the ack
         async for frame in client:
             print(frame)
+
 
 asyncio.run(main())
 ```
