@@ -15,7 +15,6 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "aprs3 >= 8.0.0",
-    "attrs > 20",
 ]
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -82,3 +81,9 @@ fail_under = 90
 
 [tool.ty.environment]
 python-version = "3.11"
+
+[tool.uv.sources]
+# TODO before merge: drop these and require the library releases without attrs
+ax253 = { git = "https://github.com/python-aprs/ax253", branch = "refactor/dataclasses" }
+kiss3 = { git = "https://github.com/python-aprs/kiss3", branch = "refactor/dataclasses" }
+aprs3 = { git = "https://github.com/python-aprs/aprs3", branch = "refactor/dataclasses" }

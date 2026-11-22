@@ -1,11 +1,10 @@
 """Miniature APRS-IS-like relay server for tests and local experiments."""
 
 import asyncio
+import dataclasses
 import logging
 import threading
 import time
-
-import attrs
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +13,7 @@ SERVER_BRINGUP_TIMEOUT = 10
 SERVER_BANNER = b"# base-aprs-client APRSISSimulator\r\n"
 
 
-@attrs.define(eq=False)
+@dataclasses.dataclass(eq=False)
 class APRSISSimulator:
     """
     Miniature APRS-IS-like server for testing.
@@ -42,18 +41,32 @@ class APRSISSimulator:
     is available as ``.port`` once the server is started.
     """
 
-    host: str = attrs.field(default="127.0.0.1")
-    port: int = attrs.field(default=0)
-    received: list[tuple[tuple[str, int], bytes]] = attrs.field(factory=list)
+    host: str = "127.0.0.1"
+    port: int = 0
+    received: list[tuple[tuple[str, int], bytes]] = dataclasses.field(
+        default_factory=list
+    )
     """Every relayed line, with the peer address that sent it."""
 
-    _writers: list[asyncio.StreamWriter] = attrs.field(factory=list, init=False)
-    _loop: asyncio.AbstractEventLoop | None = attrs.field(default=None, init=False)
-    _server: asyncio.AbstractServer | None = attrs.field(default=None, init=False)
-    _thread: threading.Thread | None = attrs.field(default=None, init=False)
-    _started: threading.Event = attrs.field(factory=threading.Event, init=False)
-    _stopped: asyncio.Event | None = attrs.field(default=None, init=False)
-    _error: BaseException | None = attrs.field(default=None, init=False)
+    _writers: list[asyncio.StreamWriter] = dataclasses.field(
+        default_factory=list, init=False, repr=False
+    )
+    _loop: asyncio.AbstractEventLoop | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    _server: asyncio.AbstractServer | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    _thread: threading.Thread | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    _started: threading.Event = dataclasses.field(
+        default_factory=threading.Event, init=False, repr=False
+    )
+    _stopped: asyncio.Event | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    _error: BaseException | None = dataclasses.field(default=None, init=False, repr=False)
 
     def _broadcast(self, sender: asyncio.StreamWriter | None, line: bytes) -> None:
         for writer in list(self._writers):

@@ -11,6 +11,7 @@ How to run the net:
 """
 
 import argparse
+import dataclasses
 import logging
 import re
 import time
@@ -21,7 +22,6 @@ from threading import Event
 
 import appdirs
 import aprs
-import attrs
 from aprs import APRSFrame, Message
 
 from base_aprs_client import Client
@@ -45,9 +45,9 @@ def split_ip_port(ip_and_port, default_port=None):
     return (ip, port)
 
 
-@attrs.define
+@dataclasses.dataclass
 class TimestampTracker:
-    ts_id = attrs.field()
+    ts_id: str
 
     @property
     def _marker_file(self):
@@ -68,13 +68,15 @@ class TimestampTracker:
         self._marker_file.write_text(str(value))
 
 
-@attrs.define
+@dataclasses.dataclass
 class APRSNetClient(Client):
-    checkin_text = attrs.field(default="ACK {tocall}")
-    all_checkins = attrs.field(factory=dict)
-    _timers = attrs.field(factory=list)
-    _tpe = attrs.field(factory=ThreadPoolExecutor)
-    _stop_all = attrs.field(factory=Event)
+    checkin_text: str = "ACK {tocall}"
+    all_checkins: dict = dataclasses.field(default_factory=dict)
+    _timers: list = dataclasses.field(default_factory=list, init=False, repr=False)
+    _tpe: ThreadPoolExecutor = dataclasses.field(
+        default_factory=ThreadPoolExecutor, init=False, repr=False
+    )
+    _stop_all: Event = dataclasses.field(default_factory=Event, init=False, repr=False)
 
     def schedule_periodic(self, cb, period_sec, identifier):
         """

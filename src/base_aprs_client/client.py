@@ -1,10 +1,10 @@
+import dataclasses
 import random
 import time
 import typing as t
 from asyncio import Future
 from enum import Enum
 
-import attrs
 from aprs import (
     APRSFrame,
     DataType,
@@ -59,18 +59,27 @@ def path_split(p):
     return [Address.from_any(a) for a in p]
 
 
-@attrs.define
-class Client:
-    mycall = attrs.field(converter=Address.from_any)
-    sync_frame_io = attrs.field()
-    default_path = attrs.field(factory=list, converter=path_split)
-    destination = attrs.field(default="APZ069", converter=Address.from_any)
-    next_message_sequence_number = attrs.field()
-    outstanding_messages = attrs.field(factory=dict, init=False)
+def _random_sequence_number() -> int:
+    return random.randint(0, SEQ_NUM_MAX)
 
-    @next_message_sequence_number.default
-    def _next_message_sequence_number_default(self):
-        return random.randint(0, SEQ_NUM_MAX)
+
+@dataclasses.dataclass
+class Client:
+    mycall: Address | str
+    sync_frame_io: t.Any
+    default_path: list[Address] | str = dataclasses.field(default_factory=list)
+    destination: Address | str = "APZ069"
+    next_message_sequence_number: int = dataclasses.field(
+        default_factory=_random_sequence_number
+    )
+    outstanding_messages: dict[bytes, MessageAckFuture] = dataclasses.field(
+        default_factory=dict, init=False
+    )
+
+    def __post_init__(self) -> None:
+        self.mycall = Address.from_any(self.mycall)
+        self.default_path = path_split(self.default_path)
+        self.destination = Address.from_any(self.destination)
 
     def _burn_message_sequence_number(self) -> bytes:
         number = b"%x" % self.next_message_sequence_number

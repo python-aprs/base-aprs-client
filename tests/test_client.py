@@ -58,6 +58,6 @@ def test_status(client1, client2):
 def test_position(client1, client2):
     pos = Position()
     sent_frame = client1.send_position(position=pos)
-    assert sent_frame.info._position == pos
+    assert sent_frame.info.position == pos
     client2.read(min_frames=1)
-    assert client2.frames[0].info._position == pos
+    assert client2.frames[0].info.position == pos
