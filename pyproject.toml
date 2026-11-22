@@ -14,7 +14,7 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "aprs3 >= 8.0.0",
+    "aprs3 >= 8.1.0a0",
     "attrs > 20",
 ]
 readme = "README.md"
@@ -50,6 +50,11 @@ dev = [
 ]
 
 [tool.setuptools_scm]
+
+[tool.uv]
+# aprs3 8.1.0a0 and its ax253/kiss3 dependencies are pre-releases, which uv
+# (unlike pip) won't pick transitively by default. Drop once they are stable.
+prerelease = "allow"
 
 [tool.ruff]
 line-length = 90

@@ -2,18 +2,21 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
+[options]
+prerelease-mode = "allow"
+
 [[package]]
 name = "aprs3"
-version = "8.0.0.post1"
+version = "8.1.0a0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "ax253" },
     { name = "kiss3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fd/4e/664000643ca752befc686efb7465f9aec5f55de18eb547b37275ad64510c/aprs3-8.0.0.post1.tar.gz", hash = "sha256:9557481647e00da9c78764708aff8c59d93925a615fdced9f85af0a4d15045f1", size = 816365, upload-time = "2022-06-13T03:37:10.525Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b1/69/d2ed211aad64bcd9e92fc69e19fcb444aa1d71c62782ee082122b1a3d6b2/aprs3-8.1.0a0.tar.gz", hash = "sha256:cc65a1cb5454c4533f0de6a77b22641422f7bcacbece3799635141aca83fddbe", size = 849644, upload-time = "2026-11-22T10:01:13.677Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e4/41/d26236c8ec51f0d26439113b489d86da1250b2aa90ee7418bd9e8a413dcf/aprs3-8.0.0.post1-py3-none-any.whl", hash = "sha256:bb79c5aa3e238d05f7a1686bf8a16ce5f0c055bacc40b848ddd2b9d1afc79079", size = 20936, upload-time = "2022-06-13T03:37:07.84Z" },
+    { url = "https://files.pythonhosted.org/packages/19/c5/a32160feee40a02e811dceb3eb8936c1b1a4c3139c93214f84b1d847a594/aprs3-8.1.0a0-py3-none-any.whl", hash = "sha256:e87eb5ee33ef57fd6a9d5325c44307e46091fb3631b2c786397ff2b053606abc", size = 21457, upload-time = "2026-11-22T10:01:12.617Z" },
 ]
 
 [[package]]
@@ -27,16 +30,15 @@ wheels = [
 
 [[package]]
 name = "ax253"
-version = "0.1.5.post1"
+version = "0.2.0a0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "bitarray" },
-    { name = "importlib-metadata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2e/94/f7400f96ed094e9b9daca9e9753e02eba4e3af347ec087b430f1dcd8e281/ax253-0.1.5.post1.tar.gz", hash = "sha256:16141a7a2b3a635a8c0d8dc6bea79b9a910d9ec2164914e9e4c7d02557a80a8f", size = 24386, upload-time = "2022-06-12T23:30:25.109Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/84/41/7b6e2112e74c1ee3ffb0eef59e8ed3b8581138403b1b110591d889859ec9/ax253-0.2.0a0.tar.gz", hash = "sha256:8a1618daa9bdfbc444eb0d6acc8318a806c505c0e8cfee5f753d366c10d7b6fa", size = 68173, upload-time = "2026-11-22T09:34:26.189Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/af/58/759d2201c158370924871e04ff27a52e2fc8c34670e0892d95ee242ae5dc/ax253-0.1.5.post1-py3-none-any.whl", hash = "sha256:dcbba9491447da460b628b7f718a622c7dcd20a71bd4bf296f28ecc4ed8aef36", size = 20338, upload-time = "2022-06-12T23:30:22.217Z" },
+    { url = "https://files.pythonhosted.org/packages/86/67/f552f18702b29931079c2d9e45a72d05ae16f56142177db6205d3432800e/ax253-0.2.0a0-py3-none-any.whl", hash = "sha256:2c77d4220eaec40d8d625ed2749585bba7ae72ddf8aa19ff5ae16fedcad04404", size = 21792, upload-time = "2026-11-22T09:34:25.427Z" },
 ]
 
 [[package]]
@@ -58,7 +60,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aprs3", specifier = ">=8.0.0" },
+    { name = "aprs3", specifier = ">=8.1.0a0" },
     { name = "attrs", specifier = ">20" },
 ]
 
@@ -333,19 +335,6 @@ wheels = [
 ]
 
 [[package]]
-name = "importlib-metadata"
-version = "10.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "lazy-importer", marker = "python_full_version < '3.15'" },
-    { name = "zipp" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/91/0ef39e4ef4407de276289a3759977ac3a8cc546f59c55d725750eae3f41b/importlib_metadata-10.2.0.tar.gz", hash = "sha256:9413a2029fd9ca5669d27f1386071bbfe3c7ebca0545692ec975088241fe1d79", size = 72457, upload-time = "2026-11-09T19:09:10.915Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7f/61/0c0fae37eb561d8fddb788cbae0f227051628d70d67498a8a116c1f547d7/importlib_metadata-10.2.0-py3-none-any.whl", hash = "sha256:c7a4bf1c7479601f6b8e437cfc14f4f77028ba62a8f34ae95cd93d9774dfba51", size = 34109, upload-time = "2026-11-09T19:09:09.942Z" },
-]
-
-[[package]]
 name = "iniconfig"
 version = "2.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -356,27 +345,17 @@ wheels = [
 
 [[package]]
 name = "kiss3"
-version = "8.0.0"
+version = "8.1.0a0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "ax253" },
     { name = "bitarray" },
-    { name = "importlib-metadata" },
     { name = "pyserial-asyncio" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8b/66/f2a20256f697ca1e55fe25778bfcdd884e0135af687f32d43001e47146ea/kiss3-8.0.0.tar.gz", hash = "sha256:076006a0d7a36157533196d1e41787b217cbd5a4e348b20322c2ab6dae238425", size = 17123, upload-time = "2022-06-13T02:57:42.332Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/51/25/0219bc4c32663b7b2645b7ecf3b44226eaf8d20924ae93b9d2826056f806/kiss3-8.1.0a0.tar.gz", hash = "sha256:464cc6ae3d414053a39ede89a9c3feaed6c1560817123cdf0d711228965faf98", size = 59702, upload-time = "2026-11-22T09:50:49.906Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2b/8f/8aa885553dc126a5fa5277cf2879c5bff85cf3cb200ba2f9a6b26b53d37e/kiss3-8.0.0-py3-none-any.whl", hash = "sha256:374cbd86ac817c811dbddab12053e13563f34bcfa43eca7aed49a94d91083bba", size = 11261, upload-time = "2022-06-13T02:57:39.481Z" },
-]
-
-[[package]]
-name = "lazy-importer"
-version = "0.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d9/23/d2c8308466a6831043ac3518e480c2e1a06b21a13e0a8f6542ab29cf592a/lazy_importer-0.1.0.tar.gz", hash = "sha256:b2e296716ce015c0cd80e57b940e52727c5b934b34b8656d5ce06bdd0ee5fbdd", size = 84008, upload-time = "2026-10-20T00:36:58.369Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0a/28/7ded071d0975dcc6d5d106ffbf7b3ca420f7caa3b8a235fa604b6e37032a/lazy_importer-0.1.0-py3-none-any.whl", hash = "sha256:bd93fab7bef18e842eea02b839410954d37889140dc64ca4d9680aec6880c739", size = 12580, upload-time = "2026-10-20T00:36:57.176Z" },
+    { url = "https://files.pythonhosted.org/packages/31/a0/819ab14eea323aa68d15b465c6147f09c92e5793850b05c53e06c6d87e4c/kiss3-8.1.0a0-py3-none-any.whl", hash = "sha256:96b46d8bcb73b068e83e8568894a3295a9781e4ba30f8b7888bf3ddbeb6826ba", size = 12121, upload-time = "2026-11-22T09:50:49.057Z" },
 ]
 
 [[package]]
@@ -517,13 +496,4 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/cd/fe/fc14a66f6a7464a6b7ebd2440f7becd2146aa865f7516b22d44df29c1f3a/ty-0.0.107-py3-none-win32.whl", hash = "sha256:40b4c00666db9bcfe112b320522192ae598c0982f3c7270ce62eb313ffabb373", size = 13966366, upload-time = "2026-11-18T21:07:51.826Z" },
     { url = "https://files.pythonhosted.org/packages/a0/ad/1c992fb038f33a34f32f1ebc57ac4023ab60b4530e2bbf3fdd5e6d97753e/ty-0.0.107-py3-none-win_amd64.whl", hash = "sha256:e9b5e292a0b39105e1068ff176f355eb645b45d9f6aa91765ca739069ed13c12", size = 14895905, upload-time = "2026-11-18T21:07:54.814Z" },
     { url = "https://files.pythonhosted.org/packages/4e/93/83c2fa56dd6ab9f9d1253621ae79a5bbc2f3fc2bb3e562f2e8cd1ad5df5c/ty-0.0.107-py3-none-win_arm64.whl", hash = "sha256:c5f4eb4ea3c84ab755dafb7d09abee8d6fbd582db5371d858443f0c85e72dcd3", size = 14031494, upload-time = "2026-11-18T21:07:57.714Z" },
-]
-
-[[package]]
-name = "zipp"
-version = "4.1.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/18/05/ba1458dee0ac485b2a01071c1b88f5199fe878a485df482e10e1ef2205cc/zipp-4.1.2.tar.gz", hash = "sha256:cf474b90b07ea932637e17c6b9479de2b2882900b0d311bdaf4f5c000a15a97f", size = 27864, upload-time = "2026-10-21T18:57:04.743Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/44/7bd2007260da11cccca29ba2d4c345f1287aa663db38ee7cefeabf6386a5/zipp-4.1.2-py3-none-any.whl", hash = "sha256:b30cb6cd253122169c47de245ca24a86bac2a5d3802ba15bf7ba6414eb9e144d", size = 10581, upload-time = "2026-10-21T18:57:03.79Z" },
 ]
