@@ -1,199 +1,406 @@
-import logging
-import random
-import re
+"""
+Synchronous APRS client: a thin wrapper over ``AsyncClient``.
+
+Two ways to use it:
+
+- ``Client.aprsis(...)``, ``Client.kiss_tcp(...)`` and ``Client.kiss_serial(...)``
+  run the async client on a private event loop in a background thread, so
+  acks, retries, reconnects and the send queue run even while the
+  application isn't calling ``read()``.
+- ``Client(mycall, sync_frame_io)`` with an already started ``aprs.TCP``,
+  ``aprs.TCPKISS`` or ``aprs.SerialKISS`` keeps the original API. Its event
+  loop is shared with the transport, so it only runs inside the client's
+  calls (``read()``, ``send_*``, ``MessageAckFuture.result()``, ``poll()``).
+"""
+
+import asyncio
+import concurrent.futures
+import threading
 import time
 import typing as t
-from asyncio import Future
-from enum import Enum
+import weakref
 
 import attrs
-from aprs import (
-    APRSFrame,
-    DataType,
-    InformationField,
-    Message,
-    Position,
-    PositionReport,
-    StatusReport,
+from aprs import APRSFrame, InformationField, Message, Position
+from aprs.aprsis import TCP, create_aprsis_connection
+from aprs.kiss import TCPKISS, SerialKISS
+from ax253 import Address, FrameDecodeProtocol
+
+from .aio import (
+    DEFAULT_DUPLICATE_WINDOW,
+    AsyncClient,
+    Connector,
+    ReconnectPolicy,
+    aprsis_connector,
+    kiss_serial_connector,
+    kiss_tcp_connector,
 )
-from ax253 import Address
+from .common import (
+    DEFAULT_MESSAGE_RETRY,
+    DEFAULT_MESSAGE_RETRY_PERIOD,
+    MESSAGE_TEXT_MAX,
+    SEQ_NUM_MAX,
+    MaximumRetryExceeded,
+    MessageRejected,
+    OverflowDisposition,
+    parse_ack,
+    path_split,
+    split_message,
+    truncate_message,
+)
 
-logger = logging.getLogger(__name__)
+if t.TYPE_CHECKING:
+    from .store import PacketRecord, PacketStore
 
-# APRS101 p72: "ack" or "rej" and the message number (1-5 characters). A
-# reply-ack capable station may append "}" and more (aprs11/replyacks.txt).
-ACK_REJ_REX = re.compile(rb"^(ack|rej)([A-Za-z0-9]{1,5})(?:}[A-Za-z0-9]{0,5})?$")
+__all__ = [
+    "Client",
+    "MESSAGE_TEXT_MAX",
+    "MaximumRetryExceeded",
+    "MessageAckFuture",
+    "MessageRejected",
+    "OverflowDisposition",
+    "SEQ_NUM_MAX",
+    "parse_ack",
+    "path_split",
+    "split_message",
+    "truncate_message",
+]
 
-
-class OverflowDisposition(Enum):
-    Truncate = False
-    Continue = True
-
-
-MESSAGE_TEXT_MAX = 67
-"""APRS101 p71: longest message text, in bytes, before the "{" message number."""
-SEQ_NUM_MAX = 0xFFFF
-DEFAULT_MESSAGE_RETRY = 3
-DEFAULT_MESSAGE_RETRY_PERIOD = 10
-
-
-class MaximumRetryExceeded(TimeoutError):
-    pass
-
-
-class MessageRejected(Exception):
-    """The recipient answered a message with "rej"."""
-
-    def __init__(self, frame: APRSFrame) -> None:
-        super().__init__(f"{frame.source} rejected the message: {frame}")
-        self.frame = frame
-
-
-def parse_ack(text: bytes) -> tuple[bytes, bytes] | None:
-    """Return ``(b"ack" or b"rej", number)`` if ``text`` is an ack/rej, else None."""
-    match = ACK_REJ_REX.match(text)
-    if match is None:
-        return None
-    return match.group(1), match.group(2)
+_T = t.TypeVar("_T")
 
 
-class MessageAckFuture(Future):
-    def __init__(self, message, path=None, tries=None, period=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+_DRIVERS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _Driver]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+class _Driver:
+    """Which thread is running a shared (inline) loop right now."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.thread: int | None = None
+
+
+class _Runner:
+    """
+    Runs coroutines on the client's loop, from the calling thread.
+
+    Threaded: the loop runs forever in a daemon thread and calls are handed
+    to it. Inline (``sync_frame_io``): the loop is shared with the transport
+    and every legacy client, so the calling thread runs it until the call is
+    done; a call from another thread while the loop runs is handed to it.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, threaded: bool) -> None:
+        self.loop = loop
+        self.thread: threading.Thread | None = None
+        if threaded:
+            self.thread = threading.Thread(
+                target=loop.run_forever, name="base_aprs_client", daemon=True
+            )
+            self.thread.start()
+            return
+        self._driver = _DRIVERS.setdefault(loop, _Driver())
+
+    def run(
+        self, coro: t.Coroutine[t.Any, t.Any, _T], timeout: float | None = None
+    ) -> _T:
+        if self.thread is not None:
+            return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+        driver = self._driver
+        if driver.thread == threading.get_ident():
+            coro.close()
+            raise RuntimeError(
+                "Client methods can't be called from the event loop; "
+                "use the AsyncClient (client.aclient) there"
+            )
+        deadline = None if timeout is None else time.monotonic() + timeout
+        handed: concurrent.futures.Future | None = None
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if driver.lock.acquire(blocking=False):
+                driver.thread = threading.get_ident()
+                try:
+                    # wait_for only times out ``coro`` itself; a handed-over
+                    # call is waited for here, so it isn't left unscheduled
+                    target = coro if handed is None else asyncio.wrap_future(handed)
+                    return self.loop.run_until_complete(
+                        asyncio.wait_for(target, remaining)
+                    )
+                finally:
+                    driver.thread = None
+                    driver.lock.release()
+            # another thread is running the loop: hand the call to it
+            if handed is None:
+                handed = asyncio.run_coroutine_threadsafe(coro, self.loop)
+            try:
+                wait = 0.05 if remaining is None else max(0.0, min(0.05, remaining))
+                return handed.result(wait)
+            except concurrent.futures.TimeoutError:
+                if remaining is not None and remaining <= 0:
+                    handed.cancel()
+                    raise TimeoutError from None
+
+    def call(self, fn: t.Callable[..., _T], *args: t.Any, **kwargs: t.Any) -> _T:
+        async def _call() -> _T:
+            return fn(*args, **kwargs)
+
+        return self.run(_call())
+
+    def stop(self) -> None:
+        if self.thread is not None:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(10)
+            self.loop.close()
+            self.thread = None
+
+
+class MessageAckFuture:
+    """
+    The pending ack for one sent message.
+
+    ``result()`` blocks until the recipient acks (returning the ack frame),
+    rejects (raising MessageRejected) or every retry has timed out (raising
+    MaximumRetryExceeded); waiting keeps the client's loop running.
+    """
+
+    def __init__(self, future: asyncio.Future, message: Message, runner: _Runner) -> None:
+        self._future = future
+        self._runner = runner
         self.message = message
-        self.path = path
-        self.remaining_tries = DEFAULT_MESSAGE_RETRY if tries is None else tries
-        self.period = DEFAULT_MESSAGE_RETRY_PERIOD if period is None else period
-        self.last_try = time.time()
 
-    def step(self, client):
-        if time.time() - self.last_try > self.period:
-            if self.remaining_tries > 0:
-                self.remaining_tries -= 1
-                self.last_try = time.time()
-                client.write(client.prepare_frame(info=self.message, path=self.path))
-            else:
-                # would always wait for at least one more period before raising the error
-                self.set_exception(
-                    MaximumRetryExceeded(f"Recipient did not acknowledge {self.message}")
-                )
+    def done(self) -> bool:
+        return self._future.done()
 
+    def _wait(self, timeout: float | None) -> None:
+        if not self._future.done():
 
-def _utf8_len(text: str) -> int:
-    return len(text.encode())
+            async def _wait() -> None:
+                await asyncio.wait([self._future])
 
+            self._runner.run(_wait(), timeout)
 
-def truncate_message(text: str, size: int = MESSAGE_TEXT_MAX) -> str:
-    """Cut ``text`` to at most ``size`` encoded bytes, without splitting a character."""
-    while _utf8_len(text) > size:
-        text = text[:-1]
-    return text
+    def result(self, timeout: float | None = None) -> APRSFrame:
+        self._wait(timeout)
+        return self._future.result()
+
+    def exception(self, timeout: float | None = None) -> BaseException | None:
+        self._wait(timeout)
+        return self._future.exception()
+
+    def cancel(self) -> bool:
+        return self._runner.call(self._future.cancel)
 
 
-def split_message(text: str, size: int = MESSAGE_TEXT_MAX) -> list[str]:
-    """
-    Split ``text`` into chunks of at most ``size`` encoded bytes.
+def _connector_for(sync_frame_io: t.Any) -> Connector | None:
+    """Build a reconnecting connector from an ``aprs`` sync transport's settings."""
+    if isinstance(sync_frame_io, TCP):
+        args, kwargs = sync_frame_io.args, sync_frame_io.kwargs
 
-    Chunks break after the last space that fits, so words stay whole where
-    possible; a word longer than ``size`` is split. Joining the chunks gives
-    back ``text`` exactly.
-    """
-    chunks = []
-    while _utf8_len(text) > size:
-        head = truncate_message(text, size)
-        space = head.rfind(" ")
-        if space > 0:
-            head = head[: space + 1]
-        chunks.append(head)
-        text = text[len(head) :]
-    if text or not chunks:
-        chunks.append(text)
-    return chunks
+        async def connect() -> FrameDecodeProtocol:
+            _, protocol = await create_aprsis_connection(*args, **kwargs)
+            return protocol
+
+        return connect
+    if isinstance(sync_frame_io, TCPKISS):
+        return kiss_tcp_connector(*sync_frame_io.address)
+    if isinstance(sync_frame_io, SerialKISS):
+        return kiss_serial_connector(sync_frame_io.port, int(sync_frame_io.speed))
+    return None
 
 
-def path_split(p):
-    if isinstance(p, str):
-        return [Address.from_any(a.strip()) for a in p.split(",")]
-    return [Address.from_any(a) for a in p]
-
-
-@attrs.define
+@attrs.define(eq=False)
 class Client:
-    mycall = attrs.field(converter=Address.from_any)
-    sync_frame_io = attrs.field()
-    default_path = attrs.field(factory=list, converter=path_split)
-    destination = attrs.field(default="APZ069", converter=Address.from_any)
-    next_message_sequence_number = attrs.field()
-    outstanding_messages = attrs.field(factory=dict, init=False)
+    """
+    Sends messages with ack and retry, acks incoming messages addressed to
+    ``mycall``, and sends status and position reports.
 
-    @next_message_sequence_number.default
-    def _next_message_sequence_number_default(self):
-        return random.randint(0, SEQ_NUM_MAX)
+    Subclasses may override ``on_frame(frame)`` and ``on_message(message,
+    frame)``; they are called from ``read()`` for each frame it returns.
+    """
 
-    def _burn_message_sequence_number(self) -> bytes:
-        number = b"%x" % self.next_message_sequence_number
-        self.next_message_sequence_number = (
-            self.next_message_sequence_number + 1
-        ) % SEQ_NUM_MAX
-        return number
+    mycall: Address = attrs.field(converter=Address.from_any)
+    sync_frame_io: t.Any = attrs.field(default=None)
+    default_path: list[Address] = attrs.field(factory=list, converter=path_split)
+    destination: Address = attrs.field(default="APZ069", converter=Address.from_any)
+    _initial_sequence_number: int | None = attrs.field(
+        default=None, alias="next_message_sequence_number"
+    )
+    store: "PacketStore | None" = attrs.field(default=None, kw_only=True)
+    reconnect: ReconnectPolicy | None = attrs.field(factory=ReconnectPolicy, kw_only=True)
+    retries: int = attrs.field(default=DEFAULT_MESSAGE_RETRY, kw_only=True)
+    retry_period: float = attrs.field(default=DEFAULT_MESSAGE_RETRY_PERIOD, kw_only=True)
+    duplicate_window: float = attrs.field(default=DEFAULT_DUPLICATE_WINDOW, kw_only=True)
+    reply_ack: bool = attrs.field(default=True, kw_only=True)
+    connector: Connector | None = attrs.field(default=None, kw_only=True)
 
-    def _step_outstanding_messages(self) -> None:
-        acked_messages = set()
-        for number, outstanding_message in self.outstanding_messages.items():
-            if outstanding_message.done():
-                acked_messages.add(number)
-                if not outstanding_message.cancelled() and (
-                    exc := outstanding_message.exception()
-                ):
-                    logger.warning("Message %s failed: %s", number.decode(), exc)
-            else:
-                outstanding_message.step(self)
-        for acked_number in acked_messages:
-            del self.outstanding_messages[acked_number]
+    aclient: AsyncClient = attrs.field(init=False)
+    _runner: _Runner = attrs.field(init=False)
 
-    def read(
-        self,
-        min_frames: int | None = -1,
-    ) -> t.Sequence[APRSFrame]:
-        return self.sync_frame_io.read(callback=self.on_frame, min_frames=min_frames)
-
-    def on_message(self, message: Message, frame: APRSFrame) -> None:
-        if message.number:
-            self.send_message(frame.source, f"ack{message.number.decode()}")
-            return  # acks and rejects never carry a message number
-        ack = parse_ack(message.text)
-        if ack is None:
-            return
-        kind, number = ack
-        future = self.outstanding_messages.get(number)
-        if future is None or future.done():
-            return
-        if kind == b"rej":
-            future.set_exception(MessageRejected(frame))
-        else:
-            future.set_result(frame)
-
-    def on_frame(self, frame: APRSFrame) -> None:
-        if isinstance(frame.info, Message) and frame.info.addressee.decode() == str(
-            self.mycall
-        ):
-            self.on_message(frame.info, frame)
-        self._step_outstanding_messages()
-
-    def prepare_frame(
-        self,
-        info: InformationField,
-        path: list[Address] | None = None,
-    ) -> APRSFrame:
-        return APRSFrame(
+    def __attrs_post_init__(self) -> None:
+        kwargs: dict[str, t.Any] = dict(
+            mycall=self.mycall,
+            default_path=self.default_path,
             destination=self.destination,
-            source=self.mycall,
-            path=path_split(path) if path else self.default_path,
-            info=info,
+            store=self.store,
+            reconnect=self.reconnect,
+            retries=self.retries,
+            retry_period=self.retry_period,
+            duplicate_window=self.duplicate_window,
+            reply_ack=self.reply_ack,
+        )
+        if self._initial_sequence_number is not None:
+            kwargs["next_message_sequence_number"] = self._initial_sequence_number
+        protocol = None
+        if self.sync_frame_io is not None:
+            self._runner = _Runner(self.sync_frame_io.loop, threaded=False)
+            protocol = self.sync_frame_io.protocol
+            kwargs["connector"] = self.connector or _connector_for(self.sync_frame_io)
+        else:
+            if self.connector is None:
+                raise ValueError("Client needs a sync_frame_io or a connector")
+            self._runner = _Runner(asyncio.new_event_loop(), threaded=True)
+            kwargs["connector"] = self.connector
+        self.aclient = AsyncClient(**kwargs)
+        if self.sync_frame_io is not None:
+            # keep the transport's stop() pointed at the live connection
+            self.aclient.connect_handlers.append(self._adopt_protocol)
+        self._runner.run(self.aclient.start(protocol))
+
+    def _adopt_protocol(self, protocol: FrameDecodeProtocol) -> None:
+        self.sync_frame_io._protocol = protocol  # pylint: disable=protected-access
+
+    # -- constructors --
+
+    @classmethod
+    def aprsis(
+        cls,
+        mycall: str,
+        host: str = "rotate.aprs.net",
+        port: int = 14580,
+        passcode: str = "-1",
+        filter: str | None = None,
+        **kwargs: t.Any,
+    ) -> "Client":
+        """Connect to APRS-IS; the client runs on a background thread."""
+        connector = aprsis_connector(str(mycall), host, port, passcode, filter)
+        return cls(mycall=mycall, connector=connector, **kwargs)
+
+    @classmethod
+    def kiss_tcp(
+        cls,
+        mycall: str,
+        host: str,
+        port: int,
+        kiss_settings: dict | None = None,
+        **kwargs,
+    ) -> "Client":
+        """Connect to a KISS-over-TCP TNC; the client runs on a background thread."""
+        return cls(
+            mycall=mycall,
+            connector=kiss_tcp_connector(host, port, kiss_settings),
+            **kwargs,
         )
 
+    @classmethod
+    def kiss_serial(
+        cls,
+        mycall: str,
+        port: str,
+        baudrate: int = 9600,
+        kiss_settings: dict | None = None,
+        **kwargs: t.Any,
+    ) -> "Client":
+        """Open a serial KISS TNC; the client runs on a background thread."""
+        return cls(
+            mycall=mycall,
+            connector=kiss_serial_connector(port, baudrate, kiss_settings),
+            **kwargs,
+        )
+
+    # -- lifecycle --
+
+    def close(self) -> None:
+        """Close the connection and stop the client."""
+        try:
+            self._runner.run(self.aclient.close())
+        finally:
+            self._runner.stop()
+
+    def __enter__(self) -> "Client":
+        return self
+
+    def __exit__(self, *exc_info: t.Any) -> None:
+        self.close()
+
+    @property
+    def connected(self) -> bool:
+        return self.aclient.connected
+
+    @property
+    def next_message_sequence_number(self) -> int:
+        """The number the next acked message will carry."""
+        return self.aclient.next_message_sequence_number
+
+    @property
+    def outstanding_messages(self) -> dict:
+        """Messages waiting for an ack, by message number."""
+        return self.aclient.outstanding
+
+    def poll(self, seconds: float = 0.0) -> None:
+        """Let the client's loop run for ``seconds`` (only needed with ``sync_frame_io``)."""
+        self._runner.run(asyncio.sleep(seconds))
+
+    # -- receiving --
+
+    def read(self, min_frames: int | None = -1) -> list[APRSFrame]:
+        """
+        Frames received since the last read, calling ``on_frame`` for each.
+
+        ``min_frames=-1`` returns what has arrived without waiting; a number
+        waits for at least that many; None reads until the client closes.
+        Duplicate messages are left out.
+        """
+
+        async def _read() -> list[APRSFrame]:
+            await asyncio.sleep(0)  # let pending input be decoded
+            frames = self.aclient.recv_nowait()
+            while min_frames is None or len(frames) < min_frames:
+                try:
+                    frames.append(await self.aclient.recv())
+                except EOFError:
+                    break
+                frames.extend(self.aclient.recv_nowait())
+            return frames
+
+        frames = self._runner.run(_read())
+        for frame in frames:
+            self.on_frame(frame)
+        return frames
+
+    def on_frame(self, frame: APRSFrame) -> None:
+        """Called by ``read()`` for every frame; calls ``on_message`` for ours."""
+        info = frame.info
+        if (
+            isinstance(info, Message)
+            and info.addressee.decode("latin1").strip().upper()
+            == str(self.mycall).upper()
+        ):
+            self.on_message(info, frame)
+
+    def on_message(self, message: Message, frame: APRSFrame) -> None:
+        """Called by ``read()`` for each message to ``mycall`` (acks included)."""
+
+    # -- sending --
+
+    def prepare_frame(
+        self, info: InformationField, path: list[Address] | str | None = None
+    ) -> APRSFrame:
+        return self.aclient.prepare_frame(info, path)
+
     def write(self, frame: APRSFrame) -> None:
-        return self.sync_frame_io.write(frame)
+        self._runner.call(self.aclient.write, frame)
 
     def send_message(
         self,
@@ -201,65 +408,47 @@ class Client:
         body: str,
         ack: bool = False,
         overflow: OverflowDisposition = OverflowDisposition.Truncate,
-        path: list[Address] | None = None,
+        path: list[Address] | str | None = None,
     ) -> MessageAckFuture | list[MessageAckFuture | None] | None:
         """
-        Send ``body`` to ``recipient``.
+        Send ``body`` to ``recipient`` without waiting for the ack.
 
-        Text longer than 67 bytes is cut (``Truncate``) or split into several
-        messages, on word boundaries where possible (``Continue``). A split
-        message returns one result per part. With ``ack``, each result is a
-        future that resolves when the recipient acks that part.
+        Text over 67 bytes is cut (``Truncate``) or split on word boundaries
+        (``Continue``); a split message returns one result per part. With
+        ``ack``, each result is a MessageAckFuture.
         """
-        if overflow == OverflowDisposition.Continue:
-            chunks = split_message(body)
-            if len(chunks) > 1:
-                return [
-                    self.send_message(recipient, body=chunk, ack=ack, path=path)
-                    for chunk in chunks
-                ]
-        else:
-            # aprs3 >= 8.1 no longer cuts message text at 67 characters
-            body = truncate_message(body)
-        number = self._burn_message_sequence_number() if ack else None
-        message = Message(
-            raw=b"",
-            data_type=None,
-            data=b"",
-            addressee=str(recipient).encode(),
-            text=body.encode(),
-            number=number,
+        submitted = self._runner.call(
+            self.aclient._submit_parts,  # pylint: disable=protected-access
+            str(recipient),
+            body,
+            ack,
+            overflow,
+            path,
         )
-        if number is not None:
-            self.outstanding_messages[number] = MessageAckFuture(
-                message=message, path=path, loop=self.sync_frame_io.loop
-            )
-        frame = self.prepare_frame(
-            info=message,
-            path=path,
-        )
-        self.write(frame)
-        return self.outstanding_messages.get(number)
+        results: list[MessageAckFuture | None] = [
+            MessageAckFuture(future, message, self._runner) if ack else None
+            for future, message in submitted
+        ]
+        if len(results) == 1:
+            return results[0]
+        return results
 
-    def send_status(self, status: str, path: list[Address] | None = None) -> APRSFrame:
-        frame = self.prepare_frame(
-            info=StatusReport(raw=b"", data_type=None, data=b"", status=status.encode()),
-            path=path,
-        )
-        self.write(frame)
-        return frame
+    def send_status(
+        self, status: str, path: list[Address] | str | None = None
+    ) -> APRSFrame:
+        return self._runner.call(self.aclient.send_status, status, path)
 
     def send_position(
-        self, position: Position, path: list[Address] | None = None
+        self, position: Position, path: list[Address] | str | None = None
     ) -> APRSFrame:
-        frame = self.prepare_frame(
-            info=PositionReport(
-                raw=b"",
-                data_type=DataType.POSITION_W_O_TIMESTAMP_MSG,
-                data=b"",
-                position=position,
-            ),
-            path=path,
-        )
-        self.write(frame)
-        return frame
+        return self._runner.call(self.aclient.send_position, position, path)
+
+    def schedule(
+        self,
+        frame: APRSFrame | InformationField,
+        delay: float = 0.0,
+        at: t.Any = None,
+        path: list[Address] | str | None = None,
+    ) -> "PacketRecord":
+        """Queue ``frame`` in the store for later transmission (see AsyncClient)."""
+        return self._runner.run(self.aclient.schedule(frame, delay, at, path))
