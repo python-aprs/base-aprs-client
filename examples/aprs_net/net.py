@@ -45,7 +45,7 @@ def split_ip_port(ip_and_port, default_port=None):
     return (ip, port)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class TimestampTracker:
     ts_id: str
 
@@ -68,7 +68,7 @@ class TimestampTracker:
         self._marker_file.write_text(str(value))
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class APRSNetClient(Client):
     checkin_text: str = "ACK {tocall}"
     all_checkins: dict = dataclasses.field(default_factory=dict)
@@ -107,7 +107,7 @@ class APRSNetClient(Client):
 
     def on_frame(self, frame: APRSFrame) -> None:
         log.debug(frame)
-        return super().on_frame(frame)
+        return super(APRSNetClient, self).on_frame(frame)
 
     def on_message(self, message: Message, frame: APRSFrame) -> None:
         matches = CALLSIGN_REX.findall(message.text)
@@ -126,7 +126,7 @@ class APRSNetClient(Client):
             for callsign in new_checkins:
                 self.all_checkins[callsign] = frame
             self.log_checkins()
-        return super().on_message(message, frame)
+        return super(APRSNetClient, self).on_message(message, frame)
 
     def is_alive(self):
         return not all(t.done() for t in self._timers)

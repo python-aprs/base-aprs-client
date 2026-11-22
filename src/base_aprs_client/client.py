@@ -63,7 +63,7 @@ def _random_sequence_number() -> int:
     return random.randint(0, SEQ_NUM_MAX)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class Client:
     mycall: Address | str
     sync_frame_io: t.Any

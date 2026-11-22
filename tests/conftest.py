@@ -12,17 +12,17 @@ def server():
         yield s
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class FrameSavingClient(Client):
     frames: list = dataclasses.field(default_factory=list)
     messages: list = dataclasses.field(default_factory=list)
 
     def on_frame(self, frame):
-        super().on_frame(frame)
+        super(FrameSavingClient, self).on_frame(frame)
         self.frames.append(frame)
 
     def on_message(self, message, frame):
-        super().on_message(message, frame)
+        super(FrameSavingClient, self).on_message(message, frame)
         self.messages.append(message)
 
 

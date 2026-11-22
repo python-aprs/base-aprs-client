@@ -13,7 +13,7 @@ SERVER_BRINGUP_TIMEOUT = 10
 SERVER_BANNER = b"# base-aprs-client APRSISSimulator\r\n"
 
 
-@dataclasses.dataclass(eq=False)
+@dataclasses.dataclass(eq=False, slots=True)
 class APRSISSimulator:
     """
     Miniature APRS-IS-like server for testing.
