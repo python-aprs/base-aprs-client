@@ -1,4 +1,6 @@
+import logging
 import random
+import re
 import time
 import typing as t
 from asyncio import Future
@@ -16,6 +18,12 @@ from aprs import (
 )
 from ax253 import Address
 
+logger = logging.getLogger(__name__)
+
+# APRS101 p72: "ack" or "rej" and the message number (1-5 characters). A
+# reply-ack capable station may append "}" and more (aprs11/replyacks.txt).
+ACK_REJ_REX = re.compile(rb"^(ack|rej)([A-Za-z0-9]{1,5})(?:}[A-Za-z0-9]{0,5})?$")
+
 
 class OverflowDisposition(Enum):
     Truncate = False
@@ -31,13 +39,29 @@ class MaximumRetryExceeded(TimeoutError):
     pass
 
 
+class MessageRejected(Exception):
+    """The recipient answered a message with "rej"."""
+
+    def __init__(self, frame: APRSFrame) -> None:
+        super().__init__(f"{frame.source} rejected the message: {frame}")
+        self.frame = frame
+
+
+def parse_ack(text: bytes) -> tuple[bytes, bytes] | None:
+    """Return ``(b"ack" or b"rej", number)`` if ``text`` is an ack/rej, else None."""
+    match = ACK_REJ_REX.match(text)
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
 class MessageAckFuture(Future):
     def __init__(self, message, path=None, tries=None, period=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.message = message
         self.path = path
-        self.remaining_tries = tries or DEFAULT_MESSAGE_RETRY
-        self.period = period or DEFAULT_MESSAGE_RETRY_PERIOD
+        self.remaining_tries = DEFAULT_MESSAGE_RETRY if tries is None else tries
+        self.period = DEFAULT_MESSAGE_RETRY_PERIOD if period is None else period
         self.last_try = time.time()
 
     def step(self, client):
@@ -84,8 +108,10 @@ class Client:
         for number, outstanding_message in self.outstanding_messages.items():
             if outstanding_message.done():
                 acked_messages.add(number)
-                if outstanding_message.exception():
-                    print(outstanding_message.exception())
+                if not outstanding_message.cancelled() and (
+                    exc := outstanding_message.exception()
+                ):
+                    logger.warning("Message %s failed: %s", number.decode(), exc)
             else:
                 outstanding_message.step(self)
         for acked_number in acked_messages:
@@ -100,10 +126,18 @@ class Client:
     def on_message(self, message: Message, frame: APRSFrame) -> None:
         if message.number:
             self.send_message(frame.source, f"ack{message.number.decode()}")
-        if message.text.startswith(b"ack") or message.text.startswith(b"rej"):
-            future = self.outstanding_messages.get(message.text[3:])
-            if future:
-                future.set_result(frame)
+            return  # acks and rejects never carry a message number
+        ack = parse_ack(message.text)
+        if ack is None:
+            return
+        kind, number = ack
+        future = self.outstanding_messages.get(number)
+        if future is None or future.done():
+            return
+        if kind == b"rej":
+            future.set_exception(MessageRejected(frame))
+        else:
+            future.set_result(frame)
 
     def on_frame(self, frame: APRSFrame) -> None:
         if isinstance(frame.info, Message) and frame.info.addressee.decode() == str(
