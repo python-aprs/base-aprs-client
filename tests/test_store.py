@@ -142,3 +142,42 @@ async def test_record_is_a_dataclass():
     assert record.id is None and record.due is None
     assert record.created.tzinfo is datetime.UTC
     assert "PacketRecord(" in repr(record)
+
+
+async def test_claim_then_transmit_fails(store):
+    """claim, transmit, then mark_error records the failure (#7)."""
+    record = await store.schedule(STATUS)
+    assert await store.claim(record)
+    assert await store.mark_error(record, "tx failed")
+    fetched = await store.get(record.id)
+    assert fetched is not None
+    assert fetched.state is PacketState.ERROR
+    assert fetched.error == "tx failed"
+    assert not await store.mark_error(record, "again"), "only once"
+
+
+async def test_mark_error_ignores_logged_frames(store):
+    logged = await store.record_sent(STATUS)
+    received = await store.record_received(STATUS)
+    assert not await store.mark_error(logged, "nope")
+    assert not await store.mark_error(received, "nope")
+    assert (await store.get(logged.id)).state is PacketState.SENT
+
+
+async def test_requeue_failed_record(store):
+    record = await store.schedule(MESSAGE)
+    assert not await store.requeue(record), "only ERROR records are requeued"
+    await store.claim(record)
+    await store.mark_error(record, "transport closed")
+    assert await store.requeue(record, delay=-1)
+    assert record.state is PacketState.QUEUED
+    assert record.error is None and record.sent is None
+    assert [r.id for r in await store.due()] == [record.id]
+    later = utcnow() + datetime.timedelta(hours=1)
+    assert await store.claim(record)
+    assert await store.mark_error(record, "x")
+    assert await store.requeue(record.id, at=later)
+    fetched = await store.get(record.id)
+    assert fetched is not None and fetched.due == later.replace(
+        microsecond=later.microsecond
+    )
