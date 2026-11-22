@@ -1,0 +1,20 @@
+name: Upload Python Package
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # PyPI trusted publishing (OIDC); no API token needed
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # setuptools_scm needs tags
+    - uses: astral-sh/setup-uv@v6
+    - run: uv build
+    - run: uv publish --trusted-publishing always
