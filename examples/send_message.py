@@ -2,8 +2,8 @@ import argparse
 import logging
 
 from aprs import TCP
-from base_aprs_client import Client
 
+from base_aprs_client import Client
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -23,15 +23,21 @@ def main():
     parser.add_argument("--tocall", required=True)
     parser.add_argument("--path", default="WIDE2-1")
     parser.add_argument("-m", "--msg")
-    parser.add_argument("--wait", action="store_true", help="wait for message acknowledgement")
+    parser.add_argument(
+        "--wait", action="store_true", help="wait for message acknowledgement"
+    )
     parser.add_argument("--aprsis", required=True)
     parser.add_argument("--aprsis-passcode")
-        
+
     args = parser.parse_args()
     aprsis_ip, aprsis_port = split_ip_port(args.aprsis, default_port=14580)
     with TCP(aprsis_ip, aprsis_port, args.mycall, args.aprsis_passcode) as transport:
-        client = Client(mycall=args.mycall, sync_frame_io=transport, default_path=args.path)
-        msg_future = client.send_message(recipient=args.tocall, body=args.msg, ack=args.wait)
+        client = Client(
+            mycall=args.mycall, sync_frame_io=transport, default_path=args.path
+        )
+        msg_future = client.send_message(
+            recipient=args.tocall, body=args.msg, ack=args.wait
+        )
         if msg_future is not None:
             while not msg_future.done():
                 print(client.read(min_frames=1))

@@ -1,5 +1,4 @@
 import pytest
-
 from aprs import Position
 
 from base_aprs_client.client import OverflowDisposition

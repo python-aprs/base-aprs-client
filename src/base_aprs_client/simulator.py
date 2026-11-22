@@ -1,12 +1,11 @@
 """Miniature APRS-IS-like relay server for tests and local experiments."""
+
 import asyncio
 import logging
 import threading
 import time
-from typing import List, Optional, Tuple
 
 import attrs
-
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +44,18 @@ class APRSISSimulator:
 
     host: str = attrs.field(default="127.0.0.1")
     port: int = attrs.field(default=0)
-    received: List[Tuple[Tuple[str, int], bytes]] = attrs.field(factory=list)
+    received: list[tuple[tuple[str, int], bytes]] = attrs.field(factory=list)
     """Every relayed line, with the peer address that sent it."""
 
-    _writers: List[asyncio.StreamWriter] = attrs.field(factory=list, init=False)
-    _loop: Optional[asyncio.AbstractEventLoop] = attrs.field(default=None, init=False)
-    _server: Optional[asyncio.AbstractServer] = attrs.field(default=None, init=False)
-    _thread: Optional[threading.Thread] = attrs.field(default=None, init=False)
+    _writers: list[asyncio.StreamWriter] = attrs.field(factory=list, init=False)
+    _loop: asyncio.AbstractEventLoop | None = attrs.field(default=None, init=False)
+    _server: asyncio.AbstractServer | None = attrs.field(default=None, init=False)
+    _thread: threading.Thread | None = attrs.field(default=None, init=False)
     _started: threading.Event = attrs.field(factory=threading.Event, init=False)
-    _stopped: Optional[asyncio.Event] = attrs.field(default=None, init=False)
-    _error: Optional[BaseException] = attrs.field(default=None, init=False)
+    _stopped: asyncio.Event | None = attrs.field(default=None, init=False)
+    _error: BaseException | None = attrs.field(default=None, init=False)
 
-    def _broadcast(self, sender: Optional[asyncio.StreamWriter], line: bytes) -> None:
+    def _broadcast(self, sender: asyncio.StreamWriter | None, line: bytes) -> None:
         for writer in list(self._writers):
             if writer is sender or writer.is_closing():
                 continue
@@ -153,9 +152,7 @@ class APRSISSimulator:
         deadline = time.monotonic() + timeout
         while self.n_clients < n:
             if time.monotonic() > deadline:
-                raise TimeoutError(
-                    "Only {} of {} clients connected".format(self.n_clients, n)
-                )
+                raise TimeoutError(f"Only {self.n_clients} of {n} clients connected")
             time.sleep(0.01)
 
     def close(self) -> None:

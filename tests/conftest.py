@@ -2,8 +2,8 @@ import gc
 
 import attrs
 import pytest
-
 from aprs import TCP
+
 from base_aprs_client import APRSISSimulator, Client
 
 # aprs3 <= 8.0.0.post1 can dispatch decoding to leftover attrs pre-slots

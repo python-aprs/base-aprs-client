@@ -11,18 +11,17 @@ How to run the net:
 """
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 import logging
-from pathlib import Path
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from pathlib import Path
 from threading import Event
 
 import appdirs
-import attrs
-
 import aprs
+import attrs
 from aprs import APRSFrame, Message
 
 from base_aprs_client import Client
@@ -60,7 +59,7 @@ class TimestampTracker:
     def time(self):
         try:
             return float(self._marker_file.read_text())
-        except:
+        except (OSError, ValueError):
             log.info(f"Could not get timestamp for {self.ts_id}")
             return 0
 
@@ -94,7 +93,7 @@ class APRSNetClient(Client):
             while True:
                 next_tx_in = ts.time - time.time() + period_sec
                 if next_tx_in > 0:
-                    log.debug("Will {} in {} seconds".format(identifier, round(next_tx_in)))
+                    log.debug(f"Will {identifier} in {round(next_tx_in)} seconds")
                     if self._stop_all.wait(timeout=next_tx_in):
                         return
                 cb()
@@ -109,10 +108,12 @@ class APRSNetClient(Client):
         return super().on_frame(frame)
 
     def on_message(self, message: Message, frame: APRSFrame) -> None:
-        matches = CALLSIGN_REX.findall(message.text) 
+        matches = CALLSIGN_REX.findall(message.text)
         if frame.source.callsign not in matches:
             matches.append(frame.source.callsign)
-        new_checkins = [m.decode() for m in matches if m.decode() not in self.all_checkins]
+        new_checkins = [
+            m.decode() for m in matches if m.decode() not in self.all_checkins
+        ]
         if new_checkins:
             body = self.checkin_text.format(tocall=" ".join(new_checkins))
             self.send_message(
@@ -127,7 +128,7 @@ class APRSNetClient(Client):
 
     def is_alive(self):
         return not all(t.done() for t in self._timers)
-    
+
     def stop(self):
         self._stop_all.set()
         for t in self._timers:
@@ -145,38 +146,91 @@ class APRSNetClient(Client):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mycall", required=True, help="Callsign used to sign outgoing packets")
-    parser.add_argument("--path", default="WIDE2-1", help="Comma separated list of path (digipeater).")
-    parser.add_argument("--kiss", default=None, help="ip:port for KISS over TCP connection")
-    parser.add_argument("--aprsis", default=None, help="ip:port for APRS-IS TCP connection")
-    parser.add_argument("--aprsis-passcode", default=None, help="Passcode must match mycall in order to TX via APRS-IS")
-    parser.add_argument("--bulletin-period", default="7200", type=int, help="Minimum time in seconds between sending bulletin message. 0 to disable.")
-    parser.add_argument("--bulletin-group", default="BLN0", help="Bulletin group, like BLN0")
-    parser.add_argument("--bulletin-text", default=None, help="Bulletin text, 67 characters max")
-    parser.add_argument("--beacon-period", default="1800", type=int, help="Minimum time in seconds between sending beacon. 0 to disable.")
+    parser.add_argument(
+        "--mycall", required=True, help="Callsign used to sign outgoing packets"
+    )
+    parser.add_argument(
+        "--path", default="WIDE2-1", help="Comma separated list of path (digipeater)."
+    )
+    parser.add_argument(
+        "--kiss", default=None, help="ip:port for KISS over TCP connection"
+    )
+    parser.add_argument(
+        "--aprsis", default=None, help="ip:port for APRS-IS TCP connection"
+    )
+    parser.add_argument(
+        "--aprsis-passcode",
+        default=None,
+        help="Passcode must match mycall in order to TX via APRS-IS",
+    )
+    parser.add_argument(
+        "--bulletin-period",
+        default="7200",
+        type=int,
+        help="Minimum time in seconds between sending bulletin message. 0 to disable.",
+    )
+    parser.add_argument(
+        "--bulletin-group", default="BLN0", help="Bulletin group, like BLN0"
+    )
+    parser.add_argument(
+        "--bulletin-text", default=None, help="Bulletin text, 67 characters max"
+    )
+    parser.add_argument(
+        "--beacon-period",
+        default="1800",
+        type=int,
+        help="Minimum time in seconds between sending beacon. 0 to disable.",
+    )
     parser.add_argument("--beacon-packet", default=None, help="Position packet, raw.")
-    parser.add_argument("--status-period", default="1800", type=int, help="Minimum time in seconds between sending status. 0 to disable.")
-    parser.add_argument("--status-text", default=None, help="Status text, 62 characters max")
-    parser.add_argument("--report-checkins", default=None, help="Number of checkins to report")
-    parser.add_argument("--end-time", default=time.strftime("%H:%M"), help="End time to report (defaults to now)")
-    parser.add_argument("--checkin-text", default="ACK {tocall}, thanks for checking in", help="Message text, {tocall} will be replaced")
+    parser.add_argument(
+        "--status-period",
+        default="1800",
+        type=int,
+        help="Minimum time in seconds between sending status. 0 to disable.",
+    )
+    parser.add_argument(
+        "--status-text", default=None, help="Status text, 62 characters max"
+    )
+    parser.add_argument(
+        "--report-checkins", default=None, help="Number of checkins to report"
+    )
+    parser.add_argument(
+        "--end-time",
+        default=time.strftime("%H:%M"),
+        help="End time to report (defaults to now)",
+    )
+    parser.add_argument(
+        "--checkin-text",
+        default="ACK {tocall}, thanks for checking in",
+        help="Message text, {tocall} will be replaced",
+    )
 
     args = parser.parse_args()
 
     # determine the transport and connect to it
     if args.kiss is not None:
         kiss_ip, kiss_port = split_ip_port(args.kiss, default_port=8001)
-        transport = aprs.TCPKISS(kiss_ip, kiss_port, strip_df_start=True) 
+        transport = aprs.TCPKISS(kiss_ip, kiss_port, strip_df_start=True)
     elif args.aprsis is not None:
         aprsis_ip, aprsis_port = split_ip_port(args.aprsis, default_port=14580)
         transport = aprs.TCP(aprsis_ip, aprsis_port, args.mycall, args.aprsis_passcode)
     else:
         raise RuntimeError("Must specify --kiss or --aprsis to proceed.")
 
-    with transport, APRSNetClient(checkin_text=args.checkin_text, mycall=args.mycall, sync_frame_io=transport, default_path=args.path) as client:
+    with (
+        transport,
+        APRSNetClient(
+            checkin_text=args.checkin_text,
+            mycall=args.mycall,
+            sync_frame_io=transport,
+            default_path=args.path,
+        ) as client,
+    ):
         if args.report_checkins is not None:
             # report checkins and exit
-            client.send_status(f'>ACS Net: Mon 20:00 - {args.end_time} w/ {args.report_checkins} checkins')
+            client.send_status(
+                f">ACS Net: Mon 20:00 - {args.end_time} w/ {args.report_checkins} checkins"
+            )
             return
         # otherwise start the net server
         if args.bulletin_text and args.bulletin_period > 0:

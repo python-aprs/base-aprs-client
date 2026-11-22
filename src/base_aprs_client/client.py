@@ -1,19 +1,18 @@
-from asyncio import Future
-from enum import Enum
 import random
 import time
 import typing as t
+from asyncio import Future
+from enum import Enum
 
 import attrs
-
 from aprs import (
     APRSFrame,
     DataType,
+    InformationField,
     Message,
     Position,
-    InformationField,
-    StatusReport,
     PositionReport,
+    StatusReport,
 )
 from ax253 import Address
 
@@ -49,7 +48,9 @@ class MessageAckFuture(Future):
                 client.write(client.prepare_frame(info=self.message, path=self.path))
             else:
                 # would always wait for at least one more period before raising the error
-                self.set_exception(MaximumRetryExceeded("Recipient did not acknowledge {}".format(self.message)))
+                self.set_exception(
+                    MaximumRetryExceeded(f"Recipient did not acknowledge {self.message}")
+                )
 
 
 def path_split(p):
@@ -92,13 +93,13 @@ class Client:
 
     def read(
         self,
-        min_frames: t.Optional[int] = -1,
+        min_frames: int | None = -1,
     ) -> t.Sequence[APRSFrame]:
         return self.sync_frame_io.read(callback=self.on_frame, min_frames=min_frames)
 
     def on_message(self, message: Message, frame: APRSFrame) -> None:
         if message.number:
-            self.send_message(frame.source, "ack{}".format(message.number.decode()))
+            self.send_message(frame.source, f"ack{message.number.decode()}")
         if message.text.startswith(b"ack") or message.text.startswith(b"rej"):
             future = self.outstanding_messages.get(message.text[3:])
             if future:
@@ -112,7 +113,9 @@ class Client:
         self._step_outstanding_messages()
 
     def prepare_frame(
-        self, info: InformationField, path: t.Optional[t.List[Address]] = None,
+        self,
+        info: InformationField,
+        path: list[Address] | None = None,
     ) -> APRSFrame:
         return APRSFrame(
             destination=self.destination,
@@ -130,8 +133,8 @@ class Client:
         body: str,
         ack: bool = False,
         overflow: OverflowDisposition = OverflowDisposition.Truncate,
-        path: t.Optional[t.List[Address]] = None,
-    ) -> t.Optional[MessageAckFuture]:
+        path: list[Address] | None = None,
+    ) -> MessageAckFuture | None:
         if ack:
             number = self._burn_message_sequence_number()
         else:
@@ -154,9 +157,7 @@ class Client:
         )
         if number is not None:
             self.outstanding_messages[number] = MessageAckFuture(
-                message=message,
-                path=path,
-                loop=self.sync_frame_io.loop
+                message=message, path=path, loop=self.sync_frame_io.loop
             )
         frame = self.prepare_frame(
             info=message,
@@ -165,7 +166,7 @@ class Client:
         self.write(frame)
         return self.outstanding_messages.get(number)
 
-    def send_status(self, status: str, path: t.Optional[t.List[Address]] = None) -> APRSFrame:
+    def send_status(self, status: str, path: list[Address] | None = None) -> APRSFrame:
         frame = self.prepare_frame(
             info=StatusReport(raw=b"", data_type=None, data=b"", status=status.encode()),
             path=path,
@@ -173,7 +174,9 @@ class Client:
         self.write(frame)
         return frame
 
-    def send_position(self, position: Position, path: t.Optional[t.List[Address]] = None) -> APRSFrame:
+    def send_position(
+        self, position: Position, path: list[Address] | None = None
+    ) -> APRSFrame:
         frame = self.prepare_frame(
             info=PositionReport(
                 raw=b"",
