@@ -1,16 +1,8 @@
-import gc
-
 import attrs
 import pytest
 from aprs import TCP
 
 from base_aprs_client import APRSISSimulator, Client
-
-# aprs3 <= 8.0.0.post1 can dispatch decoding to leftover attrs pre-slots
-# classes until the cyclic GC has run, silently dropping frames (seen on
-# Python 3.9/3.10). Collect once up front; drop this when the aprs3 fix
-# ("Fix decode dispatch to leftover attrs pre-slots classes") is released.
-gc.collect()
 
 
 @pytest.fixture
