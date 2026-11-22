@@ -1,8 +1,16 @@
+import gc
+
 import attrs
 import pytest
 
 from aprs import TCP
 from base_aprs_client import APRSISSimulator, Client
+
+# aprs3 <= 8.0.0.post1 can dispatch decoding to leftover attrs pre-slots
+# classes until the cyclic GC has run, silently dropping frames (seen on
+# Python 3.9/3.10). Collect once up front; drop this when the aprs3 fix
+# ("Fix decode dispatch to leftover attrs pre-slots classes") is released.
+gc.collect()
 
 
 @pytest.fixture
@@ -25,25 +33,22 @@ class FrameSavingClient(Client):
         self.messages.append(message)
 
 
+def _client(server, mycall):
+    sync_frame_io = TCP(host=server.host, port=server.port, user=mycall)
+    sync_frame_io.start()
+    return FrameSavingClient(mycall=mycall, sync_frame_io=sync_frame_io)
+
+
 @pytest.fixture
 def client1(server):
-    with TCP(
-        host="127.0.0.1",
-        port=server.port,
-    ) as sync_frame_io:
-        yield FrameSavingClient(
-            mycall="CLIENT1",
-            sync_frame_io=sync_frame_io,
-        )
+    client = _client(server, "CLIENT1")
+    yield client
+    client.sync_frame_io.stop()
 
 
 @pytest.fixture
-def client2(server):
-    with TCP(
-        host="127.0.0.1",
-        port=server.port,
-    ) as sync_frame_io:
-        yield FrameSavingClient(
-            mycall="CLIENT2",
-            sync_frame_io=sync_frame_io,
-        )
+def client2(server, client1):
+    client = _client(server, "CLIENT2")
+    server.wait_for_clients(2)
+    yield client
+    client.sync_frame_io.stop()
