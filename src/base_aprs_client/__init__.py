@@ -1,4 +1,4 @@
-from importlib_metadata import version
+from importlib.metadata import version
 
 from .client import Client
 from .simulator import APRSISSimulator
