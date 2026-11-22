@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "aprs3"
 version = "8.1.0a0"
@@ -51,6 +48,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "ax253" },
+    { name = "kiss3" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
@@ -66,6 +65,8 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "ax253", specifier = ">=0.2.0a0" },
+    { name = "kiss3", specifier = ">=8.1.0a0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-cov", specifier = ">=5" },
     { name = "pytest-timeout", specifier = ">=2" },
