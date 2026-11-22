@@ -22,6 +22,8 @@ class OverflowDisposition(Enum):
     Continue = True
 
 
+MESSAGE_TEXT_MAX = 67
+"""APRS101 p71: longest message text, in bytes, before the "{" message number."""
 SEQ_NUM_MAX = 0xFFFF
 DEFAULT_MESSAGE_RETRY = 3
 DEFAULT_MESSAGE_RETRY_PERIOD = 10
@@ -51,6 +53,38 @@ class MessageAckFuture(Future):
                 self.set_exception(
                     MaximumRetryExceeded(f"Recipient did not acknowledge {self.message}")
                 )
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode())
+
+
+def truncate_message(text: str, size: int = MESSAGE_TEXT_MAX) -> str:
+    """Cut ``text`` to at most ``size`` encoded bytes, without splitting a character."""
+    while _utf8_len(text) > size:
+        text = text[:-1]
+    return text
+
+
+def split_message(text: str, size: int = MESSAGE_TEXT_MAX) -> list[str]:
+    """
+    Split ``text`` into chunks of at most ``size`` encoded bytes.
+
+    Chunks break after the last space that fits, so words stay whole where
+    possible; a word longer than ``size`` is split. Joining the chunks gives
+    back ``text`` exactly.
+    """
+    chunks = []
+    while _utf8_len(text) > size:
+        head = truncate_message(text, size)
+        space = head.rfind(" ")
+        if space > 0:
+            head = head[: space + 1]
+        chunks.append(head)
+        text = text[len(head) :]
+    if text or not chunks:
+        chunks.append(text)
+    return chunks
 
 
 def path_split(p):
@@ -120,7 +154,7 @@ class Client:
         return APRSFrame(
             destination=self.destination,
             source=self.mycall,
-            path=path or self.default_path,
+            path=path_split(path) if path else self.default_path,
             info=info,
         )
 
@@ -134,19 +168,26 @@ class Client:
         ack: bool = False,
         overflow: OverflowDisposition = OverflowDisposition.Truncate,
         path: list[Address] | None = None,
-    ) -> MessageAckFuture | None:
-        if ack:
-            number = self._burn_message_sequence_number()
+    ) -> MessageAckFuture | list[MessageAckFuture | None] | None:
+        """
+        Send ``body`` to ``recipient``.
+
+        Text longer than 67 bytes is cut (``Truncate``) or split into several
+        messages, on word boundaries where possible (``Continue``). A split
+        message returns one result per part. With ``ack``, each result is a
+        future that resolves when the recipient acks that part.
+        """
+        if overflow == OverflowDisposition.Continue:
+            chunks = split_message(body)
+            if len(chunks) > 1:
+                return [
+                    self.send_message(recipient, body=chunk, ack=ack, path=path)
+                    for chunk in chunks
+                ]
         else:
-            number = None
-        if overflow == OverflowDisposition.Continue and len(body) > 67:
-
-            def _chunk(message, sz=67):
-                while message:
-                    chunk, message = message[:sz], message[sz:]
-                    yield self.send_message(recipient, body=chunk, ack=ack)
-
-            return [f for f in _chunk(body)]
+            # aprs3 >= 8.1 no longer cuts message text at 67 characters
+            body = truncate_message(body)
+        number = self._burn_message_sequence_number() if ack else None
         message = Message(
             raw=b"",
             data_type=None,

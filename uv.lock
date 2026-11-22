@@ -13,16 +13,16 @@ wheels = [
 
 [[package]]
 name = "aprs3"
-version = "8.1.0a0"
+version = "8.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "ax253" },
     { name = "kiss3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/69/d2ed211aad64bcd9e92fc69e19fcb444aa1d71c62782ee082122b1a3d6b2/aprs3-8.1.0a0.tar.gz", hash = "sha256:cc65a1cb5454c4533f0de6a77b22641422f7bcacbece3799635141aca83fddbe", size = 849644, upload-time = "2026-11-22T10:01:13.677Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/64/6d/6085fcd06da8000bc5fc669068991f200416826c0d478457cbc27bbdcbc0/aprs3-8.1.0.tar.gz", hash = "sha256:bcfe8bdb6607e5319df5db5065fc18de73404caa4e4f25343f30a6dfe0e58ac9", size = 865242, upload-time = "2026-11-22T22:27:51.313Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/c5/a32160feee40a02e811dceb3eb8936c1b1a4c3139c93214f84b1d847a594/aprs3-8.1.0a0-py3-none-any.whl", hash = "sha256:e87eb5ee33ef57fd6a9d5325c44307e46091fb3631b2c786397ff2b053606abc", size = 21457, upload-time = "2026-11-22T10:01:12.617Z" },
+    { url = "https://files.pythonhosted.org/packages/57/f6/06e9e9f5f18050ec82d5070cc6fb81ed8f1d0bf2180f08be7a6449fba0b1/aprs3-8.1.0-py3-none-any.whl", hash = "sha256:f5f8aad0f100396872faad7733244d9bf0708c3f05f376ddbb0de4927e71c029", size = 24749, upload-time = "2026-11-22T22:27:50.309Z" },
 ]
 
 [[package]]
@@ -36,15 +36,15 @@ wheels = [
 
 [[package]]
 name = "ax253"
-version = "0.2.0a0"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "bitarray" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/84/41/7b6e2112e74c1ee3ffb0eef59e8ed3b8581138403b1b110591d889859ec9/ax253-0.2.0a0.tar.gz", hash = "sha256:8a1618daa9bdfbc444eb0d6acc8318a806c505c0e8cfee5f753d366c10d7b6fa", size = 68173, upload-time = "2026-11-22T09:34:26.189Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d2/d1/7eb178ee1e10d77944b9827840b1a65ffe5a45bb32f1871fb2f1eb1b6a43/ax253-0.2.0.tar.gz", hash = "sha256:d49df322bac24283e77dd2149056149eab58d1a32f56dfa2c8dec7ef901ea92d", size = 72608, upload-time = "2026-11-22T22:04:47.348Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/67/f552f18702b29931079c2d9e45a72d05ae16f56142177db6205d3432800e/ax253-0.2.0a0-py3-none-any.whl", hash = "sha256:2c77d4220eaec40d8d625ed2749585bba7ae72ddf8aa19ff5ae16fedcad04404", size = 21792, upload-time = "2026-11-22T09:34:25.427Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/83/9ef1124a945106ab775e6b30108026ec1211c916cae1de77c6bf4e6192e5/ax253-0.2.0-py3-none-any.whl", hash = "sha256:3ffe876c0a3afac52e3d50612b1c69331f8bce0214b1d181daf0cf80d3a4f296", size = 23947, upload-time = "2026-11-22T22:04:46.527Z" },
 ]
 
 [[package]]
@@ -53,6 +53,8 @@ source = { editable = "." }
 dependencies = [
     { name = "aprs3" },
     { name = "attrs" },
+    { name = "ax253" },
+    { name = "kiss3" },
 ]
 
 [package.optional-dependencies]
@@ -63,8 +65,6 @@ db = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "ax253" },
-    { name = "kiss3" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -76,16 +76,16 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'db'", specifier = ">=0.20" },
-    { name = "aprs3", specifier = ">=8.1.0a0" },
+    { name = "aprs3", specifier = ">=8.1.0" },
     { name = "attrs", specifier = ">20" },
+    { name = "ax253", specifier = ">=0.2.0" },
+    { name = "kiss3", specifier = ">=8.1.0" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'db'", specifier = ">=2.0.30" },
 ]
 provides-extras = ["db"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "ax253", specifier = ">=0.2.0a0" },
-    { name = "kiss3", specifier = ">=8.1.0a0" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-cov", specifier = ">=5" },
@@ -443,17 +443,16 @@ wheels = [
 
 [[package]]
 name = "kiss3"
-version = "8.1.0a0"
+version = "8.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "ax253" },
-    { name = "bitarray" },
     { name = "pyserial-asyncio" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/51/25/0219bc4c32663b7b2645b7ecf3b44226eaf8d20924ae93b9d2826056f806/kiss3-8.1.0a0.tar.gz", hash = "sha256:464cc6ae3d414053a39ede89a9c3feaed6c1560817123cdf0d711228965faf98", size = 59702, upload-time = "2026-11-22T09:50:49.906Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/74/b148005c7dfa68cb6a632c2bf2df71d006140f8a4113239fd5483bcd174a/kiss3-8.1.0.tar.gz", hash = "sha256:13465139a86a42b6596f5c6fe926d5b9c2a1bf1036cc058aa29159aace2cdd43", size = 61955, upload-time = "2026-11-22T22:07:44.593Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/31/a0/819ab14eea323aa68d15b465c6147f09c92e5793850b05c53e06c6d87e4c/kiss3-8.1.0a0-py3-none-any.whl", hash = "sha256:96b46d8bcb73b068e83e8568894a3295a9781e4ba30f8b7888bf3ddbeb6826ba", size = 12121, upload-time = "2026-11-22T09:50:49.057Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/5d/d9f477df33adaf94d3314f04c1b9431417b26b2201a5f6b1c88b71ac4a60/kiss3-8.1.0-py3-none-any.whl", hash = "sha256:0a377a5f43e3710dd61b735b7c939c75d51df45a569914e5605f300b4be0aa5b", size = 13209, upload-time = "2026-11-22T22:07:43.618Z" },
 ]
 
 [[package]]
