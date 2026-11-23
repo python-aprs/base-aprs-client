@@ -14,9 +14,9 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "aprs3 >= 8.1.0",
-    "ax253 >= 0.2.0",
-    "kiss3 >= 8.1.0",
+    "aprs3 >= 8.2.0",
+    "ax253 >= 0.2.1",
+    "kiss3 >= 8.1.1",
     "attrs > 20",
 ]
 readme = "README.md"
@@ -84,3 +84,7 @@ fail_under = 90
 
 [tool.ty.environment]
 python-version = "3.11"
+
+[tool.ty.src]
+# the aprs_net example (and its appdirs dependency) is being rewritten
+exclude = ["examples/aprs_net"]
