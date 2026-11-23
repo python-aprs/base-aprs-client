@@ -73,18 +73,19 @@ ignore = [
 extend-safe-fixes = ["UP028"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "src"]
 timeout = 30
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--cov=base_aprs_client --cov-report=term-missing"
+addopts = "--cov=base_aprs_client --cov-report=term-missing --doctest-modules"
 
 [tool.coverage.report]
 fail_under = 90
 
 [tool.ty.environment]
 python-version = "3.11"
+extra-paths = ["examples"]
 
 [tool.ty.src]
-# the aprs_net example (and its appdirs dependency) is being rewritten
+# the aprs_net example is a Reflex app with its own requirements
 exclude = ["examples/aprs_net"]
