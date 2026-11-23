@@ -200,6 +200,7 @@ async def test_queue_survives_restart(sim, db_url):
         async with station(sim, "ALPHA", store=store) as a:
             record = await a.schedule(a.prepare_frame(b">from the past"), delay=0.5)
     # the first ALPHA is gone before the frame is due; a new one sends it
+    await eventually(lambda: sim.n_clients == 0)
     async with PacketStore(db_url) as store:
         async with station(sim, "BRAVO") as b:
             # the frame is already due, so ALPHA sends it as soon as it
