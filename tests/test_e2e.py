@@ -200,6 +200,9 @@ async def test_queue_survives_restart(sim, db_url):
     # the first ALPHA is gone before the frame is due; a new one sends it
     async with PacketStore(db_url) as store:
         async with station(sim, "BRAVO") as b:
+            # the frame is already due, so ALPHA sends it as soon as it
+            # connects; the simulator must have BRAVO registered by then
+            await eventually(lambda: sim.n_clients == 1)
             async with station(sim, "ALPHA", store=store):
                 got = await b.recv(timeout=5)
                 assert got.info.raw == b">from the past"
