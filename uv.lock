@@ -13,16 +13,16 @@ wheels = [
 
 [[package]]
 name = "aprs3"
-version = "8.1.0"
+version = "8.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "ax253" },
     { name = "kiss3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/6d/6085fcd06da8000bc5fc669068991f200416826c0d478457cbc27bbdcbc0/aprs3-8.1.0.tar.gz", hash = "sha256:bcfe8bdb6607e5319df5db5065fc18de73404caa4e4f25343f30a6dfe0e58ac9", size = 865242, upload-time = "2026-11-22T22:27:51.313Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/15/0fa84183ec432442be9423db19d7ac122a78f938023214498e556dcf92ac/aprs3-8.2.0.tar.gz", hash = "sha256:ef652e16a3c0c42d63de0432c60743339b94c1b81e84ee78f15995d6803ecbac", size = 871754, upload-time = "2026-11-23T06:07:33.353Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/57/f6/06e9e9f5f18050ec82d5070cc6fb81ed8f1d0bf2180f08be7a6449fba0b1/aprs3-8.1.0-py3-none-any.whl", hash = "sha256:f5f8aad0f100396872faad7733244d9bf0708c3f05f376ddbb0de4927e71c029", size = 24749, upload-time = "2026-11-22T22:27:50.309Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/b5/f177529966d792ea5e6ef0933875aef83cd45e232df0d8ef272ca1c080de/aprs3-8.2.0-py3-none-any.whl", hash = "sha256:daafcaec84ffe6213cb74e77d7a4f484926e6edce6b77cb9a351ecd527a1ec5e", size = 26655, upload-time = "2026-11-23T06:07:32.285Z" },
 ]
 
 [[package]]
@@ -76,7 +76,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'db'", specifier = ">=0.20" },
-    { name = "aprs3", specifier = ">=8.1.0" },
+    { name = "aprs3", specifier = ">=8.2.0" },
     { name = "attrs", specifier = ">20" },
     { name = "ax253", specifier = ">=0.2.1" },
     { name = "kiss3", specifier = ">=8.1.1" },
