@@ -35,15 +35,14 @@ def main():
         client = Client(
             mycall=args.mycall, sync_frame_io=transport, default_path=args.path
         )
-        msg_future = client.send_message(
-            recipient=args.tocall, body=args.msg, ack=args.wait
-        )
-        if msg_future is not None:
-            while not msg_future.done():
-                print(client.read(min_frames=1))
-            print(msg_future.result())
-        else:
+        if not args.wait:
+            client.send_message(recipient=args.tocall, body=args.msg)
             print(client.read())
+            return
+        for ack in client.submit_message(recipient=args.tocall, body=args.msg):
+            while not ack.done():
+                print(client.read(min_frames=1))
+            print(ack.result())
 
 
 if __name__ == "__main__":

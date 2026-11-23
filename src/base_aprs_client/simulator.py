@@ -186,4 +186,5 @@ class APRSISSimulator:
 if __name__ == "__main__":  # pragma: no cover
     logging.basicConfig(level=logging.INFO)
     with APRSISSimulator(port=14588) as sim:
+        assert sim._thread is not None  # pylint: disable=protected-access
         sim._thread.join()  # pylint: disable=protected-access

@@ -101,8 +101,7 @@ class PacketRecord(Base):
 
     @property
     def frame(self) -> APRSFrame:
-        # aprs3's from_str is annotated as returning the ax253 base Frame
-        return APRSFrame.from_str(self.tnc2)  # ty: ignore[invalid-explicit-return]
+        return APRSFrame.from_str(self.tnc2)
 
 
 class PacketStore:

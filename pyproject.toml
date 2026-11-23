@@ -84,3 +84,7 @@ fail_under = 90
 
 [tool.ty.environment]
 python-version = "3.11"
+
+[tool.ty.src]
+# the aprs_net example (and its appdirs dependency) is being rewritten
+exclude = ["examples/aprs_net"]

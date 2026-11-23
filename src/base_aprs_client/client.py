@@ -223,7 +223,9 @@ class Client:
     mycall: Address = attrs.field(converter=Address.from_any)
     sync_frame_io: t.Any = attrs.field(default=None)
     default_path: list[Address] = attrs.field(factory=list, converter=path_split)
-    destination: Address = attrs.field(default="APZ069", converter=Address.from_any)
+    destination: Address = attrs.field(
+        default=Address.from_any("APZ069"), converter=Address.from_any
+    )
     _initial_sequence_number: int | None = attrs.field(
         default=None, alias="next_message_sequence_number"
     )
@@ -404,7 +406,7 @@ class Client:
 
     def send_message(
         self,
-        recipient: str,
+        recipient: str | Address,
         body: str,
         ack: bool = False,
         overflow: OverflowDisposition = OverflowDisposition.Truncate,
@@ -432,6 +434,32 @@ class Client:
         if len(results) == 1:
             return results[0]
         return results
+
+    def submit_message(
+        self,
+        recipient: str | Address,
+        body: str,
+        overflow: OverflowDisposition = OverflowDisposition.Truncate,
+        path: list[Address] | str | None = None,
+    ) -> list[MessageAckFuture]:
+        """
+        Send ``body`` with acks, without waiting: one future per part.
+
+        Like ``send_message(..., ack=True)``, but always a list, so the
+        result's type doesn't depend on whether the text was split.
+        """
+        submitted = self._runner.call(
+            self.aclient._submit_parts,  # pylint: disable=protected-access
+            str(recipient),
+            body,
+            True,
+            overflow,
+            path,
+        )
+        return [
+            MessageAckFuture(future, message, self._runner)
+            for future, message in submitted
+        ]
 
     def send_status(
         self, status: str, path: list[Address] | str | None = None
