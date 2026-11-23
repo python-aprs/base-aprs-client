@@ -84,7 +84,8 @@ fail_under = 90
 
 [tool.ty.environment]
 python-version = "3.11"
+extra-paths = ["examples/aprs_net"]
 
 [tool.ty.src]
-# the aprs_net example (and its appdirs dependency) is being rewritten
+# the aprs_net example is a Reflex app with its own requirements
 exclude = ["examples/aprs_net"]

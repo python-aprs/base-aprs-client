@@ -37,24 +37,20 @@ def settings(sim, **kwargs) -> Settings:
     )
 
 
-def station(sim, call, number):
-    # two-character message numbers keep reply-acks ("{2a}1b") decodable by
-    # aprs3 releases without python-aprs/aprs3#43
-    return AsyncClient.aprsis(
-        call, sim.host, sim.port, next_message_sequence_number=number
-    )
+def station(sim, call):
+    return AsyncClient.aprsis(call, sim.host, sim.port)
 
 
 @pytest.fixture
 async def net(sim):
-    n = Net(settings(sim), client_options={"next_message_sequence_number": 0x2A})
+    n = Net(settings(sim))
     await n.open()
     yield n
     await n.close(summary=False)
 
 
 async def test_checkin_by_message(sim, net):
-    async with station(sim, "KF7HVM-9", 0x1B) as mobile:
+    async with station(sim, "KF7HVM-9") as mobile:
         replies = []
         mobile.on_message(
             lambda m, f: m.text.startswith(b"ack") or replies.append(m.text)
@@ -78,7 +74,7 @@ async def test_checkin_by_message(sim, net):
 
 
 async def test_positions_and_csv(sim, net):
-    async with station(sim, "W1AW-7", 0x1C) as w1aw:
+    async with station(sim, "W1AW-7") as w1aw:
         await eventually(lambda: sim.n_clients == 2)
         w1aw.write(APRSFrame.from_str("W1AW-7>APRS:!4144.37N/07243.65W>"))
         await eventually(lambda: "W1AW" in net.positions)
@@ -93,7 +89,7 @@ async def test_positions_and_csv(sim, net):
 
 
 async def test_acks_are_not_checkins(sim, net):
-    async with station(sim, "N7DEM", 0x1D) as n7dem:
+    async with station(sim, "N7DEM") as n7dem:
         await eventually(lambda: sim.n_clients == 2)
         net.send_message("N7DEM", "are you on the net?")
         await eventually(lambda: net.sent[0].status != "sending")
@@ -103,7 +99,7 @@ async def test_acks_are_not_checkins(sim, net):
 
 
 async def test_timed_status_and_closing_summary(sim):
-    async with station(sim, "N7DEM", 0x1E) as listener:
+    async with station(sim, "N7DEM") as listener:
         await eventually(lambda: sim.n_clients == 1)
         heard = []
         listener.on_frame(lambda f: heard.append(str(f)))
