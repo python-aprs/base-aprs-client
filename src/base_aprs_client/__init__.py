@@ -6,6 +6,26 @@ support), sends status and position reports, reconnects when the transport
 drops, and can log frames and run a delayed send queue with ``PacketStore``.
 ``Client`` is its synchronous wrapper. ``APRSISSimulator`` is a local
 APRS-IS-like relay for testing without a radio.
+
+Two stations talking through the simulator. Each ``Client`` runs on a
+background thread, so N0CALL-2 acks the message without being asked:
+
+>>> from base_aprs_client import APRSISSimulator, Client
+>>> with APRSISSimulator() as sim:
+...     with (
+...         Client.aprsis("N0CALL-1", sim.host, sim.port) as alice,
+...         Client.aprsis("N0CALL-2", sim.host, sim.port) as bob,
+...     ):
+...         sim.wait_for_clients(2)
+...         ack = alice.send_message("N0CALL-2", "see you at the net", ack=True)
+...         print("acked by", ack.result(timeout=10).source)
+...         (frame,) = bob.read(min_frames=1)
+...         print(frame.source, "says", frame.info.text.decode())
+acked by N0CALL-2
+N0CALL-1 says see you at the net
+
+``Client.aprsis``, ``Client.kiss_tcp`` and ``Client.kiss_serial`` (and the
+same constructors on ``AsyncClient``) connect to APRS-IS or a KISS TNC.
 """
 
 from importlib.metadata import version

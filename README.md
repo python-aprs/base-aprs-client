@@ -79,6 +79,21 @@ with APRSISSimulator() as sim:
 
 Run it standalone on port 14588 with `python -m base_aprs_client.simulator`.
 
+## Examples
+
+The [examples](examples) directory has two scripts that work over APRS-IS
+(`--aprsis host:port`), a KISS TNC on TCP (`--tcp host:port`) or a serial
+TNC (`--serial device`):
+
+* `send_message.py` sends one message and waits for the ack, splitting long
+  text into parts. It uses `Client`.
+* `chat.py` is a terminal chat: each line you type goes to `--to`, and
+  messages addressed to you are printed as they arrive. It uses
+  `AsyncClient`.
+
+Start `python -m base_aprs_client.simulator` and point two copies of
+`chat.py` at `--aprsis localhost:14588` to try them without a radio.
+
 ## Packet log and send queue
 
 `base_aprs_client.store.PacketStore` keeps a log of frames heard and sent,
