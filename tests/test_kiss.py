@@ -72,7 +72,7 @@ async def test_serial_tnc(pty):
         heard = APRSFrame.from_str("BRAVO>APRS::ALPHA    :hi on rf{7")
         os.write(master, kiss_encode(heard))
         frame = await client.recv(timeout=5)
-        assert frame.info.text == b"hi on rf"
+        assert bytes(frame.info) == b":ALPHA    :hi on rf{7"
         (ack,) = await read_frames(master, 1)
         assert str(ack) == "ALPHA>APZ069::BRAVO    :ack7"
 

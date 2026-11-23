@@ -358,7 +358,7 @@ async def test_dropped_frames_when_nobody_reads(proto):
     for i in range(4):
         proto.feed(f"N0CALL-3>APRS:>{i}")
     await settle(10)
-    assert [f.info.status for f in c.recv_nowait()] == [b"2", b"3"]
+    assert [bytes(f.info) for f in c.recv_nowait()] == [b">2", b">3"]
     assert c.dropped_frames == 2
     await c.close()
 
