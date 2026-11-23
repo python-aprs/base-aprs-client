@@ -184,7 +184,9 @@ class AsyncClient:
     mycall: Address = attrs.field(converter=Address.from_any)
     connector: Connector | None = attrs.field(default=None)
     default_path: list[Address] = attrs.field(factory=list, converter=path_split)
-    destination: Address = attrs.field(default="APZ069", converter=Address.from_any)
+    destination: Address = attrs.field(
+        default=Address.from_any("APZ069"), converter=Address.from_any
+    )
     store: "PacketStore | None" = attrs.field(default=None)
     """Log every frame heard and sent, and transmit its queue (``schedule``)."""
     reconnect: ReconnectPolicy | None = attrs.field(factory=ReconnectPolicy)
@@ -382,7 +384,7 @@ class AsyncClient:
         to_me = isinstance(info, Message) and _same_station(
             info.addressee.decode("latin1"), str(self.mycall)
         )
-        if to_me and not self._handle_message(t.cast(Message, info), frame):
+        if to_me and not self._handle_message(info, frame):
             return  # duplicate
         self._deliver(frame, to_me)
 
@@ -483,7 +485,7 @@ class AsyncClient:
             destination=self.destination,
             source=self.mycall,
             path=path_split(path) if path else self.default_path,
-            info=info,  # ty: ignore[invalid-argument-type]  # ui() is typed for bytes
+            info=info,
         )
 
     def write(self, frame: APRSFrame, record: bool = True) -> None:
@@ -527,7 +529,7 @@ class AsyncClient:
 
     def submit_message(
         self,
-        recipient: str,
+        recipient: str | Address,
         body: str,
         ack: bool = False,
         overflow: OverflowDisposition = OverflowDisposition.Truncate,
@@ -548,7 +550,7 @@ class AsyncClient:
 
     def _submit_parts(
         self,
-        recipient: str,
+        recipient: str | Address,
         body: str,
         ack: bool,
         overflow: OverflowDisposition,
@@ -558,7 +560,7 @@ class AsyncClient:
             parts = split_message(body)
         else:
             parts = [truncate_message(body)]
-        return [self._submit_part(recipient, part, ack, path) for part in parts]
+        return [self._submit_part(str(recipient), part, ack, path) for part in parts]
 
     def _submit_part(
         self, recipient: str, text: str, ack: bool, path: list[Address] | str | None
@@ -596,7 +598,7 @@ class AsyncClient:
 
     async def send_message(
         self,
-        recipient: str,
+        recipient: str | Address,
         body: str,
         ack: bool = False,
         overflow: OverflowDisposition = OverflowDisposition.Truncate,

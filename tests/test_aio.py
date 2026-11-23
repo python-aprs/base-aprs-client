@@ -167,7 +167,8 @@ async def test_retries_survive_a_disconnect(proto):
         connector=connector,
         reconnect=ReconnectPolicy(initial_delay=0.08, jitter=0),
         retry_period=0.05,
-        retries=3,
+        # enough tries that the last one can't race the ack fed at ~0.2s
+        retries=10,
         reply_ack=False,
     )
     await c.start(proto)
@@ -357,7 +358,7 @@ async def test_dropped_frames_when_nobody_reads(proto):
     for i in range(4):
         proto.feed(f"N0CALL-3>APRS:>{i}")
     await settle(10)
-    assert [f.info.status for f in c.recv_nowait()] == [b"2", b"3"]
+    assert [bytes(f.info) for f in c.recv_nowait()] == [b">2", b">3"]
     assert c.dropped_frames == 2
     await c.close()
 

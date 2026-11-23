@@ -168,7 +168,8 @@ async def test_store_logs_heard_and_sent(sim, db_url):
             await asyncio.sleep(0.1)  # sent frames are logged in the background
         sent = await store.history(PacketState.SENT)
         heard = await store.history(PacketState.RECEIVED)
-    assert [r.frame.info.text for r in sent] == [b"log me"]
+    assert len(sent) == 1
+    assert bytes(sent[0].frame.info).startswith(b":BRAVO    :log me{")
     assert {bytes(r.frame.info.raw)[:1] for r in heard} == {b":", b">"}
     assert any(r.frame.info.raw == b">heard by alpha" for r in heard)
 
@@ -187,8 +188,9 @@ async def test_scheduled_frame_is_sent(sim, db_url):
             assert record.state is PacketState.QUEUED
             got = await b.recv(timeout=5)
             assert got.info.raw == b">later"
-        record = await store.get(record.id)
-        assert record.state is PacketState.SENT
+        assert record.id is not None
+        sent = await store.get(record.id)
+        assert sent is not None and sent.state is PacketState.SENT
 
 
 async def test_queue_survives_restart(sim, db_url):
@@ -203,7 +205,9 @@ async def test_queue_survives_restart(sim, db_url):
             async with station(sim, "ALPHA", store=store):
                 got = await b.recv(timeout=5)
                 assert got.info.raw == b">from the past"
-        assert (await store.get(record.id)).state is PacketState.SENT
+        assert record.id is not None
+        sent = await store.get(record.id)
+        assert sent is not None and sent.state is PacketState.SENT
 
 
 async def test_schedule_needs_store(sim):
@@ -231,12 +235,12 @@ def test_threaded_client(sim):
     ):
         sim.wait_for_clients(2)
         assert a.connected
-        maf = a.send_message("BRAVO", "from a thread", ack=True)
+        (maf,) = a.submit_message("BRAVO", "from a thread")
         ack = maf.result(timeout=5)
         assert str(ack.source) == "BRAVO"
         assert maf.done()
         frames = b.read(min_frames=1)
-        assert frames[0].info.text == b"from a thread"
+        assert bytes(frames[0].info).startswith(b":BRAVO    :from a thread{")
         a.send_status("threaded status")
         assert b.read(min_frames=1)[0].info.raw == b">threaded status"
 
@@ -244,7 +248,7 @@ def test_threaded_client(sim):
 def test_threaded_retry_runs_in_background(sim):
     """Timers fire without the caller driving the loop."""
     with Client.aprsis("ALPHA", sim.host, sim.port, retries=2, retry_period=0.05) as a:
-        maf = a.send_message("NOBODY", "anyone?", ack=True)
+        (maf,) = a.submit_message("NOBODY", "anyone?")
         time.sleep(0.5)
         assert maf.done()
         assert isinstance(maf.exception(), MaximumRetryExceeded)
