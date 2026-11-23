@@ -35,6 +35,7 @@ def _client(server, mycall):
 def client1(server):
     client = _client(server, "CLIENT1")
     yield client
+    client.close()
     client.sync_frame_io.stop()
 
 
@@ -43,4 +44,5 @@ def client2(server, client1):
     client = _client(server, "CLIENT2")
     server.wait_for_clients(2)
     yield client
+    client.close()
     client.sync_frame_io.stop()

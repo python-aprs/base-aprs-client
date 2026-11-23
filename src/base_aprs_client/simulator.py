@@ -94,6 +94,10 @@ class APRSISSimulator:
     async def _handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        if self._stopped is not None and self._stopped.is_set():
+            # accepted just as the server stopped: don't keep it open
+            writer.close()
+            return
         self._writers.append(writer)
         try:
             await self._handle_client(reader, writer)
@@ -117,8 +121,15 @@ class APRSISSimulator:
         self._started.set()
         async with self._server:
             await self._stopped.wait()
+            self._server.close()  # stop accepting before closing connections
             for writer in list(self._writers):
                 writer.close()
+            # let every connection handler finish, including any accepted
+            # just now that hasn't started: Python 3.11 doesn't wait for them
+            # and would leave those sockets open when the loop closes
+            handlers = asyncio.all_tasks() - {asyncio.current_task()}
+            await asyncio.gather(*handlers, return_exceptions=True)
+            await asyncio.sleep(0)  # transports finish closing
 
     def _thread_main(self) -> None:
         self._loop = asyncio.new_event_loop()
