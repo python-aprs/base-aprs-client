@@ -167,7 +167,8 @@ async def test_retries_survive_a_disconnect(proto):
         connector=connector,
         reconnect=ReconnectPolicy(initial_delay=0.08, jitter=0),
         retry_period=0.05,
-        retries=3,
+        # enough tries that the last one can't race the ack fed at ~0.2s
+        retries=10,
         reply_ack=False,
     )
     await c.start(proto)
