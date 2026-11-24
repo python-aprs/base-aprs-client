@@ -23,7 +23,7 @@ from collections.abc import Callable
 from typing import Any
 
 import attrs
-from aprs import APRSFrame, Message, Position
+from aprs import APRSFrame, DataType, Message, Position, PositionReport
 from aprs.position import PositionMixin
 
 from base_aprs_client import (
@@ -77,6 +77,8 @@ class Settings:
     beacon_lat: float | None = None
     beacon_lon: float | None = None
     beacon_symbol: str = "/r"  # antenna tower
+    beacon_comment: str = ""
+    """Text sent after the position, e.g. "Net control, 146.52"."""
     beacon_minutes: float = 0
 
     def client(self, **kwargs: Any) -> AsyncClient:
@@ -443,14 +445,19 @@ class Net:
         assert self.client is not None
         s = self.settings
         table, symbol = (s.beacon_symbol + "  ")[:2].encode()
-        self.client.send_position(
-            Position(
+        report = PositionReport(
+            raw=b"",
+            data_type=DataType.POSITION_W_O_TIMESTAMP_MSG,
+            data=b"",
+            position=Position(
                 lat=s.beacon_lat or 0.0,
                 long=s.beacon_lon or 0.0,
                 sym_table_id=bytes([table]),
                 symbol_code=bytes([symbol]),
-            )
+            ),
+            comment=s.beacon_comment.encode(),
         )
+        self.client.write(self.client.prepare_frame(report))
 
     def checkins_csv(self) -> str:
         out = io.StringIO()

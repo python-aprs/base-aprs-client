@@ -198,3 +198,23 @@ def test_settings_build_each_connection():
         assert str(client.mycall) == "N0CALL"
     with pytest.raises(ValueError, match="unknown connection"):
         Settings(connection="carrier pigeon").client()
+
+
+async def test_beacon_text(sim):
+    async with station(sim, "N7DEM") as listener:
+        await eventually(lambda: sim.n_clients == 1)
+        heard = []
+        listener.on_frame(lambda f: heard.append(str(f)))
+        net = Net(
+            settings(
+                sim,
+                beacon_lat=46.1,
+                beacon_lon=-122.9,
+                beacon_minutes=10,
+                beacon_comment="Net control, 146.52",
+            )
+        )
+        await net.open()
+        await eventually(lambda: heard)
+        await net.close(summary=False)
+    assert heard == ["NETCTL>APZ069:=4606.00N/12254.00WrNet control, 146.52"]

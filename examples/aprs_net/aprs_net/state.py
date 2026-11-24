@@ -8,11 +8,14 @@ Run the backend with a single worker so every page sees the same net.
 
 Each browser also keeps a copy of the net's settings and check-ins in
 localStorage. If the server restarts mid-net, the setup page offers to
-reopen the net with them.
+reopen the net with them. The settings of the last net opened in a browser
+fill in the setup form there next time, ahead of the APRS_NET_* environment
+variables.
 """
 
 import json
 import os
+import shlex
 
 import reflex as rx
 
@@ -23,16 +26,67 @@ NET: Net | None = None
 CONNECTIONS = {"APRS-IS": "aprsis", "KISS TCP": "kiss_tcp", "KISS serial": "kiss_serial"}
 
 
+def env_name(key: str) -> str:
+    """The environment variable for a setup form field."""
+    return {"mycall": "APRS_NET_CALL", "net_name": "APRS_NET_NAME"}.get(
+        key, f"APRS_NET_{key.upper()}"
+    )
+
+
+def default_form() -> dict[str, str]:
+    """The setup form, prefilled from APRS_NET_* environment variables."""
+    label = {v: k for k, v in CONNECTIONS.items()}
+    form = _form(Settings())
+    for key in form:
+        value = os.environ.get(env_name(key))
+        if value is not None:
+            form[key] = label.get(value, value) if key == "connection" else value
+    return form
+
+
 def default_settings() -> Settings:
     """Settings prefilled from APRS_NET_* environment variables."""
-    env = os.environ.get
+    return settings_from_form(default_form())
+
+
+def env_text(form: dict[str, str]) -> str:
+    """The form's settings as shell ``export`` lines."""
+    defaults = _form(Settings())
+    lines = []
+    for key, value in form.items():
+        if key not in defaults:
+            continue
+        if key == "connection":
+            value = CONNECTIONS.get(value, value)
+        always = key in ("mycall", "connection", "address", "net_name")
+        if always or value != defaults[key]:
+            lines.append(f"export {env_name(key)}={shlex.quote(value)}")
+    return "\n".join(lines)
+
+
+def settings_from_form(form_data: dict[str, str]) -> Settings:
+    f = {k: v.strip() for k, v in form_data.items()}
     defaults = Settings()
+    bulletin_minutes = _float(f.get("bulletin_minutes", "")) or 0
     return Settings(
-        mycall=env("APRS_NET_CALL", defaults.mycall),
-        connection=env("APRS_NET_CONNECTION", defaults.connection),
-        address=env("APRS_NET_ADDRESS", defaults.address),
-        passcode=env("APRS_NET_PASSCODE", defaults.passcode),
-        net_name=env("APRS_NET_NAME", defaults.net_name),
+        mycall=f.get("mycall", "").upper() or defaults.mycall,
+        connection=CONNECTIONS.get(f.get("connection", ""), "aprsis"),
+        address=f.get("address", ""),
+        passcode=f.get("passcode") or "-1",
+        path=f.get("path", ""),
+        net_name=f.get("net_name") or defaults.net_name,
+        checkin_reply=f.get("checkin_reply") or defaults.checkin_reply,
+        bulletin_group=f.get("bulletin_group") or "BLN0",
+        bulletin_text=f.get("bulletin_text", ""),
+        bulletin_minutes=bulletin_minutes,
+        bulletin_on=bool(f.get("bulletin_text")) and bulletin_minutes > 0,
+        status_text=f.get("status_text", ""),
+        status_minutes=_float(f.get("status_minutes", "")) or 0,
+        beacon_lat=_float(f.get("beacon_lat", "")),
+        beacon_lon=_float(f.get("beacon_lon", "")),
+        beacon_symbol=f.get("beacon_symbol") or "/r",
+        beacon_comment=f.get("beacon_comment", ""),
+        beacon_minutes=_float(f.get("beacon_minutes", "")) or 0,
     )
 
 
@@ -66,6 +120,7 @@ def _form(s: Settings) -> dict[str, str]:
         "beacon_lat": "" if s.beacon_lat is None else str(s.beacon_lat),
         "beacon_lon": "" if s.beacon_lon is None else str(s.beacon_lon),
         "beacon_symbol": s.beacon_symbol,
+        "beacon_comment": s.beacon_comment,
         "beacon_minutes": f"{s.beacon_minutes:g}",
     }
 
@@ -90,6 +145,9 @@ class NetState(rx.State):
     backup: str = rx.LocalStorage("", name="aprs_net_backup")
     """This browser's copy of the net, as JSON."""
     restore_info: str = ""
+    last_form: str = rx.LocalStorage("", name="aprs_net_settings")
+    """The setup form of the last net opened in this browser, as JSON."""
+    env_text: str = ""
     """Describes the backup the setup page offers to restore."""
     version: int = -1
 
@@ -102,6 +160,24 @@ class NetState(rx.State):
         if not isinstance(saved, dict) or saved.get("closed"):
             return None
         return saved
+
+    def _last_form(self) -> dict[str, str]:
+        try:
+            saved = json.loads(self.last_form) if self.last_form else {}
+        except ValueError:
+            return {}
+        if not isinstance(saved, dict):
+            return {}
+        return {k: v for k, v in saved.items() if isinstance(v, str)}
+
+    @rx.event
+    def set_form_field(self, key: str, value: str):
+        self.form = {**self.form, key: value}
+
+    @rx.event
+    def show_env(self):
+        form = _form(NET.settings) if NET is not None else self.form
+        self.env_text = env_text(form)
 
     @rx.event
     def load(self):
@@ -119,7 +195,10 @@ class NetState(rx.State):
                 f"from {settings.net_name} saved in this browser."
             )
         else:
-            settings = default_settings()
+            self.form = {**default_form(), **self._last_form()}
+            self.version = -1
+            self._sync()
+            return
         self.form = _form(settings)
         self.version = -1
         self._sync()
@@ -177,30 +256,11 @@ class NetState(rx.State):
         global NET  # noqa: PLW0603 - one net per server
         if NET is not None and NET.running:
             return rx.toast.error("A net is already open")
-        self.form = form_data
         f = {k: v.strip() for k, v in form_data.items()}
+        self.form = {k: v for k, v in f.items() if k != "restore"}
         if not f.get("mycall"):
             return rx.toast.error("Enter your callsign")
-        settings = Settings(
-            mycall=f["mycall"].upper(),
-            connection=CONNECTIONS.get(f.get("connection", ""), "aprsis"),
-            address=f.get("address", ""),
-            passcode=f.get("passcode") or "-1",
-            path=f.get("path", ""),
-            net_name=f.get("net_name") or "APRS Net",
-            checkin_reply=f.get("checkin_reply") or Settings().checkin_reply,
-            bulletin_group=f.get("bulletin_group") or "BLN0",
-            bulletin_text=f.get("bulletin_text", ""),
-            bulletin_minutes=_float(f.get("bulletin_minutes", "")) or 0,
-            bulletin_on=bool(f.get("bulletin_text"))
-            and (_float(f.get("bulletin_minutes", "")) or 0) > 0,
-            status_text=f.get("status_text", ""),
-            status_minutes=_float(f.get("status_minutes", "")) or 0,
-            beacon_lat=_float(f.get("beacon_lat", "")),
-            beacon_lon=_float(f.get("beacon_lon", "")),
-            beacon_symbol=f.get("beacon_symbol") or "/r",
-            beacon_minutes=_float(f.get("beacon_minutes", "")) or 0,
-        )
+        settings = settings_from_form(f)
         saved = self._saved() if f.get("restore") else None
         net = Net.restore(saved, settings) if saved else Net(settings)
         try:
@@ -209,6 +269,7 @@ class NetState(rx.State):
             return rx.toast.error(f"Could not connect: {exc}")
         NET = net
         self.restore_info = ""
+        self.last_form = json.dumps(_form(settings))
         self._sync()
 
     @rx.event
@@ -270,6 +331,7 @@ class NetState(rx.State):
             NET.settings.bulletin_on,
         )
         self.form = {**self.form, **f}
+        self.last_form = json.dumps(_form(NET.settings))
         self._sync()
         if "bulletin" in NET.timers:
             return rx.toast.success("Bulletin sent")

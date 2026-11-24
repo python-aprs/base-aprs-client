@@ -13,6 +13,8 @@ def field(label: str, name: str, placeholder: str = "", **props) -> rx.Component
             default_value=NetState.form[name],
             placeholder=placeholder,
             width="100%",
+            # keep the form in state, for the environment variables dialog
+            on_blur=lambda value: NetState.set_form_field(name, value),
             **props,
         ),
         spacing="1",
@@ -33,6 +35,51 @@ def local_time(iso: rx.Var, fmt: str = "HH:mm:ss") -> rx.Component:
     return rx.moment(iso, format=fmt, local=True)
 
 
+def env_dialog(**props) -> rx.Component:
+    """A button that shows the net's settings as environment variables."""
+    return rx.dialog.root(
+        rx.dialog.trigger(
+            rx.button(
+                "Environment variables",
+                type="button",
+                variant="soft",
+                color_scheme="gray",
+                on_click=NetState.show_env,
+                **props,
+            )
+        ),
+        rx.dialog.content(
+            rx.dialog.title("Environment variables"),
+            rx.dialog.description(
+                "Set these before ",
+                rx.code("reflex run"),
+                " to fill in the setup form with this net's settings.",
+                size="2",
+            ),
+            rx.code_block(
+                NetState.env_text,
+                language="bash",
+                wrap_long_lines=True,
+                width="100%",
+                margin_y="1em",
+            ),
+            rx.hstack(
+                rx.button(
+                    "Copy",
+                    variant="soft",
+                    on_click=[
+                        rx.set_clipboard(NetState.env_text),
+                        rx.toast.success("Copied"),
+                    ],
+                ),
+                rx.dialog.close(rx.button("Close", variant="soft", color_scheme="gray")),
+                justify="end",
+            ),
+            max_width="40em",
+        ),
+    )
+
+
 # -- setup --------------------------------------------------------------------
 
 
@@ -49,6 +96,9 @@ def setup_view() -> rx.Component:
                             list(CONNECTIONS),
                             name="connection",
                             default_value=NetState.form["connection"],
+                            on_change=lambda value: NetState.set_form_field(
+                                "connection", value
+                            ),
                             width="100%",
                         ),
                         spacing="1",
@@ -98,6 +148,8 @@ def setup_view() -> rx.Component:
                     field("Beacon latitude", "beacon_lat", "46.1"),
                     field("Beacon longitude", "beacon_lon", "-122.9"),
                     field("Every (minutes)", "beacon_minutes", "0", type="number"),
+                    field("Beacon text", "beacon_comment", "Net control, 146.52"),
+                    field("Beacon symbol", "beacon_symbol", "/r"),
                     columns=rx.breakpoints(initial="1", sm="3"),
                     spacing="3",
                     width="100%",
@@ -116,7 +168,11 @@ def setup_view() -> rx.Component:
                     width="100%",
                 ),
             ),
-            rx.button("Open the net", type="submit", size="3"),
+            rx.hstack(
+                rx.button("Open the net", type="submit", size="3"),
+                env_dialog(size="3"),
+                spacing="3",
+            ),
             spacing="4",
             width="100%",
         ),
@@ -408,6 +464,7 @@ def running_view() -> rx.Component:
                 color_scheme="gray",
             ),
             rx.spacer(),
+            env_dialog(),
             rx.button("Close the net", color_scheme="red", on_click=NetState.close_net),
             width="100%",
             align="center",

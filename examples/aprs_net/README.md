@@ -16,7 +16,7 @@ those stations too. From the page you can:
   status limit, or when you press Send now or close the net
 * edit or remove check-ins
 * send messages and see when they're acked
-* send a bulletin, status and position beacon when the net opens and then on
+* send a bulletin, status and position beacon (with its own text) when the net opens and then on
   a timer. The bulletin can be changed, and switched off and on, while the
   net runs
 * see every packet heard and sent
@@ -44,9 +44,14 @@ open the net. To transmit through APRS-IS you need the passcode for your
 callsign. With `-1` the net can hear check-ins but its replies are dropped by
 the server.
 
-To fill in the form ahead of time, set `APRS_NET_CALL`, `APRS_NET_CONNECTION`
-(`aprsis`, `kiss_tcp` or `kiss_serial`), `APRS_NET_ADDRESS`,
-`APRS_NET_PASSCODE` and `APRS_NET_NAME`.
+Each browser remembers the settings of the last net it opened and fills
+them in next time. To fill in the form ahead of time on any browser, set
+`APRS_NET_*` environment variables, one per form field: `APRS_NET_CALL`,
+`APRS_NET_CONNECTION` (`aprsis`, `kiss_tcp` or `kiss_serial`),
+`APRS_NET_ADDRESS`, `APRS_NET_PASSCODE`, `APRS_NET_NAME`,
+`APRS_NET_BEACON_COMMENT` and so on. The **Environment variables** button
+shows the current settings as `export` lines to copy. Settings remembered by
+the browser take precedence over the environment.
 
 ### Trying it without a radio
 
