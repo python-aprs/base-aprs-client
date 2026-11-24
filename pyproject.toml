@@ -84,7 +84,7 @@ fail_under = 90
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["examples"]
+extra-paths = ["examples", "examples/aprs_net"]
 
 [tool.ty.src]
 # the aprs_net example is a Reflex app with its own requirements

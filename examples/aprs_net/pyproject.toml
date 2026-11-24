@@ -1,0 +1,18 @@
+[project]
+name = "aprs-net"
+version = "0.1.0"
+description = "A web app for running an APRS net, built with Reflex on base-aprs-client"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "base-aprs-client",
+    "reflex==0.11.0",
+]
+
+[tool.uv]
+# a Reflex app, run in place with `uv run reflex run`; nothing to build
+package = false
+
+[tool.uv.sources]
+# the client from this checkout, so the app runs against the code beside it
+base-aprs-client = { path = "../..", editable = true }
