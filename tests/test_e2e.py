@@ -136,6 +136,9 @@ async def test_reconnect_gives_up_and_ends_recv():
     with APRSISSimulator() as s:
         policy = ReconnectPolicy(initial_delay=0.01, jitter=0, max_attempts=2)
         a = await station(s, "ALPHA", reconnect=policy).start()
+        # start() returns once connected; let the simulator take the
+        # connection before it stops, or the close may never reach ALPHA
+        await eventually(lambda: s.n_clients == 1)
     with pytest.raises(EOFError):
         while True:
             await a.recv(timeout=5)
