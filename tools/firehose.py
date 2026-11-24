@@ -3,7 +3,7 @@
 # dependencies = [
 #     "ax253 @ git+https://github.com/python-aprs/ax253@main",
 #     "kiss3 @ git+https://github.com/python-aprs/kiss3@main",
-#     "aprs3 @ git+https://github.com/python-aprs/aprs3@main",
+#     "aprs3 @ git+https://github.com/python-aprs/aprs3@e016a6aa8feb249c41d32be692f3244252cd1d51",
 #     "base-aprs-client[db] @ git+https://github.com/python-aprs/base-aprs-client@786676b80dbbc7544c3aef14bdb0b33bb0efa140",
 #     "psutil",
 # ]
@@ -30,7 +30,6 @@ import collections
 import gzip
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -41,12 +40,10 @@ import attr
 import psutil
 from aprs import APRSFrame, InformationField
 from aprs.mic_e import MicEReport
-from aprs.aprsis import APRSISProtocol, APRSTNC2Decode, create_aprsis_connection
+from aprs.aprsis import APRSTNC2Decode, _frame_from_line, create_aprsis_connection
 from base_aprs_client import AsyncClient
-from base_aprs_client.store import PacketStore
+from base_aprs_client.store import PacketRecord, PacketStore
 from sqlalchemy import func, select
-
-from base_aprs_client.store import PacketRecord
 
 MAX_SAMPLES = 5
 PROC = psutil.Process()
@@ -113,12 +110,12 @@ class FirehoseDecode(APRSTNC2Decode):
 
     def decode_frames(self, frame: bytes):  # type: ignore[override]
         s = self.stats
-        if any(b > 0x7F for b in frame):
+        if not frame.isascii():
             s.non_ascii += 1
         t0 = time.perf_counter()
         try:
             # exactly what APRSTNC2Decode.decode_frames does
-            decoded = APRSFrame.from_str(frame.decode("latin1"))
+            decoded = _frame_from_line(frame, getattr(self, "encoding", None))
         except Exception as exc:  # noqa: BLE001
             elapsed = time.perf_counter() - t0
             s.decode_seconds += elapsed
@@ -133,9 +130,7 @@ class FirehoseDecode(APRSTNC2Decode):
                 f"{Path(where.filename).name}:{where.name}",
             )
             s.failures[key] += 1
-            Stats._sample(
-                s.failure_samples, key, frame.decode("latin1", "replace")
-            )
+            Stats._sample(s.failure_samples, key, frame.decode("latin1", "replace"))
             return
         elapsed = time.perf_counter() - t0
         s.decode_seconds += elapsed
@@ -217,7 +212,9 @@ class CountingHandler(logging.Handler):
             self.stats.log_samples[key].append(record.getMessage()[:400])
 
 
-async def replay_server(path: Path, port: int, rate: float = 0) -> asyncio.base_events.Server:
+async def replay_server(
+    path: Path, port: int, rate: float = 0
+) -> asyncio.base_events.Server:
     lines = gzip.open(path, "rb").read() if path.suffix == ".gz" else path.read_bytes()
     lines = lines.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
 
@@ -359,7 +356,9 @@ async def main(args: argparse.Namespace) -> None:
 
     s = stats
     summary = {
-        "mode": f"replay rate={args.rate or 'max'}" if args.replay else f"live {host}:{port}",
+        "mode": f"replay rate={args.rate or 'max'}"
+        if args.replay
+        else f"live {host}:{port}",
         "elapsed_s": round(elapsed, 1),
         "lines": s.lines,
         "comments": s.comments,
