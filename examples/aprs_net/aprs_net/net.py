@@ -65,6 +65,10 @@ class Settings:
     path: str = "WIDE1-1"
     net_name: str = "APRS Net"
     checkin_reply: str = "ACK {calls}, thanks for checking in to {net}"
+    message_retries: int = 2
+    """Resends after the first try: 3 transmissions in all by default."""
+    message_retry_minutes: float = 5
+    """Wait between tries; the message fails one wait after the last."""
     voice_prefix: str = "Voice check-ins:"
     """Starts the status that announces check-ins logged by hand."""
     bulletin_group: str = "BLN0"
@@ -173,9 +177,12 @@ class Net:
 
     async def open(self) -> None:
         """Connect and start answering check-ins and sending timed packets."""
-        client = self.settings.client(
-            on_transmit=self._transmitted, **self.client_options
-        )
+        options = {
+            "retries": self.settings.message_retries,
+            "retry_period": self.settings.message_retry_minutes * 60,
+            **self.client_options,
+        }
+        client = self.settings.client(on_transmit=self._transmitted, **options)
         client.on_frame(self._heard)
         client.on_message(self._message)
         await client.start()

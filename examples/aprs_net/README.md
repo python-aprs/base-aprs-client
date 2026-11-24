@@ -15,7 +15,8 @@ those stations too. From the page you can:
   check-ins: W1AW N7DEM ..."), sent once when it fills APRS's 62-character
   status limit, or when you press Send now or close the net
 * edit or remove check-ins
-* send messages and see when they're acked
+* send messages and see when they're acked. Unacked messages are resent
+  gently: 3 tries, 5 minutes apart, by default (both settable)
 * send a bulletin, status and position beacon (with its own text) when the net opens and then on
   a timer. The bulletin can be changed, and switched off and on, while the
   net runs

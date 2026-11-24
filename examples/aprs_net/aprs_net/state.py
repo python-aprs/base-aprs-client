@@ -68,6 +68,8 @@ def settings_from_form(form_data: dict[str, str]) -> Settings:
     f = {k: v.strip() for k, v in form_data.items()}
     defaults = Settings()
     bulletin_minutes = _float(f.get("bulletin_minutes", "")) or 0
+    retries = _float(f.get("message_retries", ""))
+    retries = None if retries is None or retries < 0 else retries
     return Settings(
         mycall=f.get("mycall", "").upper() or defaults.mycall,
         connection=CONNECTIONS.get(f.get("connection", ""), "aprsis"),
@@ -76,6 +78,9 @@ def settings_from_form(form_data: dict[str, str]) -> Settings:
         path=f.get("path", ""),
         net_name=f.get("net_name") or defaults.net_name,
         checkin_reply=f.get("checkin_reply") or defaults.checkin_reply,
+        message_retries=int(retries) if retries is not None else defaults.message_retries,
+        message_retry_minutes=_float(f.get("message_retry_minutes", ""))
+        or defaults.message_retry_minutes,
         bulletin_group=f.get("bulletin_group") or "BLN0",
         bulletin_text=f.get("bulletin_text", ""),
         bulletin_minutes=bulletin_minutes,
@@ -112,6 +117,8 @@ def _form(s: Settings) -> dict[str, str]:
         "path": s.path,
         "net_name": s.net_name,
         "checkin_reply": s.checkin_reply,
+        "message_retries": str(s.message_retries),
+        "message_retry_minutes": f"{s.message_retry_minutes:g}",
         "bulletin_group": s.bulletin_group,
         "bulletin_text": s.bulletin_text,
         "bulletin_minutes": f"{s.bulletin_minutes:g}",

@@ -218,3 +218,10 @@ async def test_beacon_text(sim):
         await eventually(lambda: heard)
         await net.close(summary=False)
     assert heard == ["NETCTL>APZ069:=4606.00N/12254.00WrNet control, 146.52"]
+
+
+async def test_messages_retry_slowly(sim, net):
+    # on air, 3 tries 5 minutes apart, not the client's quick default
+    assert net.client is not None
+    assert net.client.retries == 2
+    assert net.client.retry_period == 300
