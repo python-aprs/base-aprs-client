@@ -19,7 +19,9 @@ import shlex
 
 import reflex as rx
 
-from .net import Net, Settings, base_call
+from base_aprs_client import NotConnected
+
+from .net import Net, Settings, base_call, valid_call
 
 NET: Net | None = None
 
@@ -78,6 +80,7 @@ def settings_from_form(form_data: dict[str, str]) -> Settings:
         path=f.get("path", ""),
         net_name=f.get("net_name") or defaults.net_name,
         checkin_reply=f.get("checkin_reply") or defaults.checkin_reply,
+        ncs=f.get("ncs", "").upper(),
         message_retries=int(retries) if retries is not None else defaults.message_retries,
         message_retry_minutes=_float(f.get("message_retry_minutes", ""))
         or defaults.message_retry_minutes,
@@ -117,6 +120,7 @@ def _form(s: Settings) -> dict[str, str]:
         "path": s.path,
         "net_name": s.net_name,
         "checkin_reply": s.checkin_reply,
+        "ncs": s.ncs,
         "message_retries": str(s.message_retries),
         "message_retry_minutes": f"{s.message_retry_minutes:g}",
         "bulletin_group": s.bulletin_group,
@@ -141,6 +145,9 @@ class NetState(rx.State):
     mycall: str = ""
     opened: str = ""
     summary: str = ""
+    ncs: str = ""
+    aprs_count: int = 0
+    voice_count: int = 0
     checkins: list[dict[str, str]] = []
     heard: list[dict[str, str]] = []
     sent: list[dict[str, str]] = []
@@ -232,12 +239,20 @@ class NetState(rx.State):
         self.mycall = net.settings.mycall.upper()
         self.opened = _iso(net.opened) if net.opened else ""
         self.summary = net.summary()
+        self.ncs = net.settings.ncs
+        counts = net.counts()
+        self.aprs_count, self.voice_count = counts["aprs"], counts["voice"]
         self.checkins = [
             {
                 "callsign": c.callsign,
                 "time": _iso(c.time),
                 "text": c.text,
                 "heard_from": c.heard_from,
+                "via": c.via,
+                # "" for false: the page's rx.cond treats any other text as true
+                "announce": "yes" if c.announce else "",
+                "announced": "yes" if c.announced else "",
+                "valid": "yes" if valid_call(c.callsign) else "",
                 "position": "{:.4f}, {:.4f}".format(*net.positions[c.callsign])
                 if c.callsign in net.positions
                 else "",
@@ -250,12 +265,13 @@ class NetState(rx.State):
         ]
         self.sent = [
             {
+                "index": str(i),
                 "time": _iso(m.time),
                 "recipient": m.recipient,
                 "text": m.text,
                 "status": m.status,
             }
-            for m in reversed(net.sent[-50:])
+            for i, m in reversed(list(enumerate(net.sent))[-50:])
         ]
 
     @rx.event
@@ -298,8 +314,14 @@ class NetState(rx.State):
         if NET is None or not NET.running:
             return
         call = form_data.get("callsign", "")
-        if not NET.add_checkin(call, form_data.get("note") or "manual"):
-            return rx.toast.warning(f"{call.upper() or 'That'} is already checked in")
+        key = NET.add_checkin(
+            call,
+            form_data.get("note", "").strip(),
+            via="aprs" if form_data.get("via") == "APRS" else "voice",
+            announce=bool(form_data.get("announce")),
+        )
+        if key is None:
+            return rx.toast.warning(f"{base_call(call)} is already checked in")
         self._sync()
 
     @rx.event
@@ -315,10 +337,48 @@ class NetState(rx.State):
         if NET is None or not self.editing:
             return
         call = form_data.get("callsign", "")
-        if not NET.edit_checkin(self.editing, call, form_data.get("text", "")):
+        via = {"APRS": "aprs", "Voice": "voice"}.get(form_data.get("via", ""))
+        if not NET.edit_checkin(
+            self.editing, call, form_data.get("text", "").strip(), via=via
+        ):
             return rx.toast.error(f"{base_call(call) or 'That'} is already checked in")
         self.editing = ""
         self._sync()
+
+    @rx.event
+    def toggle_announce(self, callsign: str):
+        if NET is not None and callsign in NET.checkins:
+            NET.set_announce(callsign, not NET.checkins[callsign].announce)
+            self._sync()
+
+    @rx.event
+    def cancel_message(self, index: str):
+        if NET is not None and 0 <= int(index) < len(NET.sent):
+            NET.cancel_message(NET.sent[int(index)])
+            self._sync()
+
+    @rx.event
+    def relay(self, form_data: dict[str, str]):
+        if NET is None or not NET.running:
+            return
+        text = form_data.get("text", "").strip()
+        if not text:
+            return rx.toast.error("Enter the announcement")
+        try:
+            sent = NET.relay_announcement(form_data.get("source", ""), text)
+        except NotConnected:
+            return rx.toast.error("Not connected; try again when it reconnects")
+        self._sync()
+        parts = f" in {len(sent)} parts" if len(sent) > 1 else ""
+        return rx.toast.success(f"Announcement sent{parts}")
+
+    @rx.event
+    def save_ncs(self, form_data: dict[str, str]):
+        if NET is not None:
+            NET.set_ncs(form_data.get("ncs", ""))
+            self.form = {**self.form, "ncs": NET.settings.ncs}
+            self.last_form = json.dumps(_form(NET.settings))
+            self._sync()
 
     @rx.event
     def announce_voice(self):

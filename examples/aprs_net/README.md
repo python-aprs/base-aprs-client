@@ -11,11 +11,15 @@ Net"). A check-in that names other callsigns ("checking in with N7DEM") logs
 those stations too. From the page you can:
 
 * watch check-ins arrive, with each station's last position when it beacons
-* log voice check-ins by hand. They're announced in a status ("Voice
-  check-ins: W1AW N7DEM ..."), sent once when it fills APRS's 62-character
-  status limit, or when you press Send now or close the net
-* edit or remove check-ins
-* send messages and see when they're acked. Unacked messages are resent
+* log check-ins by hand, as voice or APRS (counted separately). Voice
+  check-ins are announced in a status ("Voice check-ins: W1AW N7DEM ..."),
+  sent once when it fills APRS's 62-character status limit, or when you
+  press Send now or close the net. Leave the callsign blank, or type `??`,
+  for a station you couldn't copy: it's logged but never announced. The
+  megaphone on each row leaves a station out of the status
+* edit or remove check-ins, and record the net control station (NCS)
+* relay an announcement from a station as a status ("W1AW: ...")
+* send messages, see when they're acked, and cancel one still sending. Unacked messages are resent
   gently: 3 tries, 5 minutes apart, by default (both settable)
 * send a bulletin, status and position beacon (with its own text) when the net opens and then on
   a timer. The bulletin can be changed, and switched off and on, while the

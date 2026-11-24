@@ -115,7 +115,10 @@ async def test_timed_status_and_closing_summary(sim):
     assert heard[1] == "NETCTL>APZ069:>Voice check-ins: N7DEM"
     assert net.closed is not None
     end = net.closed.astimezone().strftime("%H:%M %Z")
-    assert heard[2] == f"NETCTL>APZ069:>Test Net closed {end} with 1 check-in"
+    assert (
+        heard[2]
+        == f"NETCTL>APZ069:>Test Net closed {end} with 1 check-in (0 APRS, 1 voice)"
+    )
     assert not net.running
     assert [h.direction for h in net.heard] == ["tx", "tx", "tx"]
 
@@ -225,3 +228,57 @@ async def test_messages_retry_slowly(sim, net):
     assert net.client is not None
     assert net.client.retries == 2
     assert net.client.retry_period == 300
+
+
+async def test_unknown_and_unannounced_checkins(sim, net):
+    assert net.add_checkin("", "weak signal") == "?"
+    assert net.add_checkin("??") == "??"
+    assert net.add_checkin("?") == "? #2"
+    assert net.add_checkin("W1AW", announce=False) == "W1AW"
+    assert net.add_checkin("N7DEM", via="aprs") == "N7DEM"
+    assert net.add_checkin("K7ABC") == "K7ABC"
+    # only valid, announced voice check-ins go in the status
+    assert net.voice_pending == ["K7ABC"]
+    assert net.counts() == {"aprs": 1, "voice": 5}
+    net.set_announce("K7ABC", False)
+    net.set_announce("W1AW", True)
+    assert net.voice_pending == ["W1AW"]
+    # once the station is copied, it's announced
+    assert net.edit_checkin("??", "kj7xyz", "", via="voice")
+    assert net.voice_pending == ["W1AW", "KJ7XYZ"]
+    assert net.announce_voice_checkins()
+    assert net.checkins["W1AW"].announced
+    net.set_announce("W1AW", False)
+    net.set_announce("W1AW", True)
+    assert net.voice_pending == [], "already announced"
+    restored = Net.restore(json.loads(json.dumps(net.backup())))
+    assert restored.checkins == net.checkins
+
+
+async def test_relay_announcement(sim, net):
+    text = "Field day is June 28 at the fairgrounds, setup starts at 8 AM, bring a chair"
+    statuses = net.relay_announcement("w1aw-9", text)
+    assert statuses == [
+        "W1AW: Field day is June 28 at the fairgrounds, setup starts at",
+        "8 AM, bring a chair",
+    ]
+    assert all(len(s) <= STATUS_MAX for s in statuses)
+    assert [h.text.split(":>", 1)[1] for h in net.heard] == statuses
+
+
+async def test_cancel_message(sim, net):
+    (entry,) = net.send_message("NOBODY", "are you there?")
+    assert net.client is not None and net.client.outstanding
+    assert net.cancel_message(entry)
+    await eventually(lambda: entry.status == "cancelled")
+    assert net.client.outstanding == {}
+    assert not net.cancel_message(entry)
+
+
+def test_ncs_in_csv():
+    net = Net(Settings())
+    net.set_ncs("w1aw")
+    net.add_checkin("N7DEM")
+    rows = list(csv.DictReader(io.StringIO(net.checkins_csv())))
+    assert rows[0]["ncs"] == "W1AW"
+    assert rows[0]["via"] == "voice"

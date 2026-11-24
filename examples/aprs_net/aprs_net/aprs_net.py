@@ -120,6 +120,7 @@ def setup_view() -> rx.Component:
                 "Net",
                 rx.grid(
                     field("Net name", "net_name", "Tuesday Night Net"),
+                    field("Net control station (NCS)", "ncs", "Callsign"),
                     field(
                         "Reply to check-ins",
                         "checkin_reply",
@@ -208,8 +209,13 @@ def checkin_edit_row(c: rx.Var) -> rx.Component:
                         name="callsign",
                         default_value=c["callsign"],
                         width="8em",
-                        required=True,
                         auto_focus=True,
+                    ),
+                    rx.select(
+                        ["Voice", "APRS"],
+                        name="via",
+                        default_value=rx.cond(c["via"] == "aprs", "APRS", "Voice"),
+                        size="1",
                     ),
                     rx.input(name="text", default_value=c["text"], flex="1"),
                     rx.button("Save", type="submit", size="1"),
@@ -226,7 +232,7 @@ def checkin_edit_row(c: rx.Var) -> rx.Component:
                 ),
                 on_submit=NetState.save_checkin,
             ),
-            col_span=5,
+            col_span=6,
         ),
     )
 
@@ -242,11 +248,22 @@ def checkin_row(c: rx.Var) -> rx.Component:
 def checkin_view_row(c: rx.Var) -> rx.Component:
     return rx.table.row(
         rx.table.cell(
-            rx.link(
-                c["callsign"],
-                href="https://aprs.fi/#!call=a%2F" + c["callsign"].to(str),
-                is_external=True,
-                weight="bold",
+            rx.cond(
+                c["valid"],
+                rx.link(
+                    c["callsign"],
+                    href="https://aprs.fi/#!call=a%2F" + c["callsign"].to(str),
+                    is_external=True,
+                    weight="bold",
+                ),
+                rx.text(c["callsign"], weight="bold", color_scheme="gray"),
+            )
+        ),
+        rx.table.cell(
+            rx.badge(
+                rx.cond(c["via"] == "aprs", "APRS", "voice"),
+                color_scheme=rx.cond(c["via"] == "aprs", "blue", "orange"),
+                variant="soft",
             )
         ),
         rx.table.cell(local_time(c["time"], "HH:mm")),
@@ -254,6 +271,32 @@ def checkin_view_row(c: rx.Var) -> rx.Component:
         rx.table.cell(rx.text(c["position"], size="1", color_scheme="gray")),
         rx.table.cell(
             rx.hstack(
+                rx.cond(
+                    (c["via"] == "voice") & c["valid"].to(bool),
+                    rx.tooltip(
+                        rx.icon_button(
+                            rx.cond(
+                                c["announce"],
+                                rx.icon("megaphone", size=14),
+                                rx.icon("megaphone-off", size=14),
+                            ),
+                            size="1",
+                            variant="ghost",
+                            color_scheme=rx.cond(c["announce"], "orange", "gray"),
+                            on_click=NetState.toggle_announce(c["callsign"]),
+                            aria_label="Include in the voice check-ins status",
+                        ),
+                        content=rx.cond(
+                            c["announced"],
+                            "Sent in the voice check-ins status",
+                            rx.cond(
+                                c["announce"],
+                                "In the voice check-ins status; click to leave out",
+                                "Left out of the voice check-ins status",
+                            ),
+                        ),
+                    ),
+                ),
                 rx.icon_button(
                     rx.icon("pencil", size=14),
                     size="1",
@@ -285,6 +328,7 @@ def checkins_card() -> rx.Component:
                 rx.table.header(
                     rx.table.row(
                         rx.table.column_header_cell("Call"),
+                        rx.table.column_header_cell("Via"),
                         rx.table.column_header_cell("Time"),
                         rx.table.column_header_cell("Message"),
                         rx.table.column_header_cell("Position"),
@@ -303,13 +347,33 @@ def checkins_card() -> rx.Component:
             ),
         ),
         rx.form(
-            rx.hstack(
-                rx.input(name="callsign", placeholder="Callsign", required=True),
-                rx.input(name="note", placeholder="Note (optional)", flex="1"),
-                rx.button("Log check-in", type="submit", variant="soft"),
+            rx.vstack(
+                rx.hstack(
+                    rx.input(
+                        name="callsign",
+                        id="checkin_callsign",
+                        placeholder="Callsign, or blank or ??",
+                        width="12em",
+                    ),
+                    rx.input(name="note", placeholder="Note (optional)", flex="1"),
+                    rx.select(
+                        ["Voice", "APRS"],
+                        name="via",
+                        default_value="Voice",
+                        size="2",
+                    ),
+                    rx.button("Log check-in", type="submit", variant="soft"),
+                    width="100%",
+                ),
+                rx.checkbox(
+                    "Include voice check-ins in the status",
+                    name="announce",
+                    default_checked=True,
+                    size="1",
+                ),
                 width="100%",
             ),
-            on_submit=NetState.add_checkin,
+            on_submit=[NetState.add_checkin, rx.set_focus("checkin_callsign")],
             reset_on_submit=True,
         ),
         rx.cond(
@@ -340,6 +404,7 @@ STATUS_COLORS = {
     "sending": "amber",
     "no ack": "red",
     "rejected": "red",
+    "cancelled": "gray",
 }
 
 
@@ -356,8 +421,41 @@ def sent_row(m: rx.Var) -> rx.Component:
                 "gray",
             ),
         ),
+        rx.cond(
+            m["status"] == "sending",
+            rx.button(
+                "Cancel",
+                size="1",
+                variant="ghost",
+                color_scheme="red",
+                on_click=NetState.cancel_message(m["index"]),
+            ),
+        ),
         width="100%",
         align="center",
+    )
+
+
+def relay_card() -> rx.Component:
+    return section(
+        "Relay an announcement",
+        rx.form(
+            rx.hstack(
+                rx.input(name="source", placeholder="From", width="8em"),
+                rx.input(
+                    name="text", placeholder="Announcement", flex="1", required=True
+                ),
+                rx.button("Send as status", type="submit", variant="soft"),
+                width="100%",
+            ),
+            on_submit=NetState.relay,
+            reset_on_submit=True,
+        ),
+        rx.text(
+            'Sent as "W1AW: ..." statuses, split to fit 62 characters each.',
+            size="1",
+            color_scheme="gray",
+        ),
     )
 
 
@@ -460,6 +558,7 @@ def running_view() -> rx.Component:
             checkins_card(),
             rx.vstack(
                 message_card(),
+                relay_card(),
                 bulletin_card(),
                 traffic_card(),
                 width="100%",
@@ -479,10 +578,27 @@ def running_view() -> rx.Component:
                 color_scheme="gray",
             ),
             rx.spacer(),
+            rx.form(
+                rx.hstack(
+                    rx.text("NCS", size="2", weight="medium"),
+                    rx.input(
+                        name="ncs",
+                        default_value=NetState.ncs,
+                        placeholder="Callsign",
+                        width="8em",
+                        key=NetState.ncs,
+                    ),
+                    rx.button("Save", type="submit", variant="soft", size="2"),
+                    align="center",
+                ),
+                on_submit=NetState.save_ncs,
+            ),
             env_dialog(),
             rx.button("Close the net", color_scheme="red", on_click=NetState.close_net),
             width="100%",
             align="center",
+            wrap="wrap",
+            spacing="3",
         ),
         spacing="4",
         width="100%",
@@ -495,12 +611,14 @@ def running_view() -> rx.Component:
 def closed_view() -> rx.Component:
     return section(
         NetState.summary,
+        rx.cond(NetState.ncs, rx.text("Net control: ", rx.text.strong(NetState.ncs))),
         rx.table.root(
             rx.table.body(
                 rx.foreach(
                     NetState.checkins,
                     lambda c: rx.table.row(
                         rx.table.cell(c["callsign"], font_weight="bold"),
+                        rx.table.cell(c["via"]),
                         rx.table.cell(local_time(c["time"], "HH:mm")),
                         rx.table.cell(c["text"]),
                     ),
@@ -539,7 +657,15 @@ def header() -> rx.Component:
         ),
         rx.cond(
             NetState.phase == "running",
-            rx.badge(NetState.checkins.length().to(str) + " checked in", variant="soft"),
+            rx.badge(
+                NetState.checkins.length().to(str)
+                + " checked in: "
+                + NetState.aprs_count.to(str)
+                + " APRS, "
+                + NetState.voice_count.to(str)
+                + " voice",
+                variant="soft",
+            ),
         ),
         rx.spacer(),
         rx.color_mode.button(),

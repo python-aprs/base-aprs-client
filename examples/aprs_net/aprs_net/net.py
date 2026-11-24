@@ -47,6 +47,11 @@ def now() -> datetime.datetime:
     return datetime.datetime.now(datetime.UTC)
 
 
+def valid_call(call: str) -> bool:
+    """Whether ``call`` (without SSID) looks like an amateur callsign."""
+    return CALLSIGN.fullmatch(call.upper()) is not None
+
+
 def base_call(call: str) -> str:
     """N0CALL-9 -> N0CALL: check-ins are per operator, not per device."""
     return call.upper().split("-", 1)[0]
@@ -65,6 +70,8 @@ class Settings:
     path: str = "WIDE1-1"
     net_name: str = "APRS Net"
     checkin_reply: str = "ACK {calls}, thanks for checking in to {net}"
+    ncs: str = ""
+    """Who ran the net (net control station), for the log."""
     message_retries: int = 2
     """Resends after the first try: 3 transmissions in all by default."""
     message_retry_minutes: float = 5
@@ -120,11 +127,18 @@ class _NetClient(AsyncClient):
 @attrs.define
 class CheckIn:
     callsign: str
+    """The base callsign, or what net control typed ("??") if it isn't one."""
     time: datetime.datetime
     text: str
-    """What they sent, or "manual" for one net control logged."""
+    """What they sent, or net control's note."""
     heard_from: str
     """The station whose message logged this check-in."""
+    via: str = "aprs"
+    """ "aprs" or "voice"; counted separately."""
+    announce: bool = True
+    """Include a voice check-in in the voice check-ins status."""
+    announced: bool = False
+    """Already sent in a voice check-ins status."""
 
 
 @attrs.define
@@ -139,7 +153,8 @@ class SentMessage:
     time: datetime.datetime
     recipient: str
     text: str
-    status: str = "sending"  # then "acked", "rejected" or "no ack"
+    status: str = "sending"  # then "acked", "rejected", "no ack" or "cancelled"
+    future: asyncio.Future | None = attrs.field(default=None, eq=False, repr=False)
 
 
 @attrs.define(eq=False)
@@ -214,12 +229,21 @@ class Net:
         self.closed = closed
         self._changed()
 
+    def counts(self) -> dict[str, int]:
+        """Check-ins by how they came in: {"aprs": 5, "voice": 7}."""
+        counts = {"aprs": 0, "voice": 0}
+        for c in self.checkins.values():
+            counts[c.via] = counts.get(c.via, 0) + 1
+        return counts
+
     def summary(self, at: datetime.datetime | None = None) -> str:
         """The closing status: when the net closed and how many checked in."""
         count = len(self.checkins)
         noun = "check-in" if count == 1 else "check-ins"
         end = (at or self.closed or now()).astimezone().strftime("%H:%M %Z")
-        return f"{self.settings.net_name} closed {end} with {count} {noun}"
+        counts = self.counts()
+        split = f" ({counts['aprs']} APRS, {counts['voice']} voice)" if count else ""
+        return f"{self.settings.net_name} closed {end} with {count} {noun}{split}"
 
     @property
     def timers(self) -> list[str]:
@@ -275,7 +299,9 @@ class Net:
         calls = [sender] + [c for c in CALLSIGN.findall(text.upper()) if c != sender]
         new = [c for c in dict.fromkeys(calls) if c not in self.checkins]
         for call in new:
-            self.checkins[call] = CheckIn(call, now(), text, str(frame.source))
+            self.checkins[call] = CheckIn(
+                call, now(), text, str(frame.source), via="aprs", announce=False
+            )
         if new:
             reply = self.settings.checkin_reply.format(
                 calls=" ".join(new), net=self.settings.net_name
@@ -285,40 +311,85 @@ class Net:
 
     # -- net control actions --
 
-    def add_checkin(self, callsign: str, note: str = "manual") -> bool:
+    def _key(self, call: str, keep: str | None = None) -> str | None:
         """
-        Log a check-in by hand; False if it's already logged or not a callsign.
+        The check-ins key for ``call``: the call itself, or None if it's a
+        callsign already logged. Something that isn't a callsign ("", "??")
+        gets a unique key, since net control may log several of those.
+        """
+        if valid_call(call):
+            return None if call in self.checkins and call != keep else call
+        label = call or "?"
+        key, n = label, 2
+        while key in self.checkins and key != keep:
+            key, n = f"{label} #{n}", n + 1
+        return key
 
-        The call is announced in the next voice check-in status.
+    def add_checkin(
+        self,
+        callsign: str,
+        note: str = "",
+        via: str = "voice",
+        announce: bool = True,
+    ) -> str | None:
         """
-        call = base_call(callsign.strip())
-        if not call or call in self.checkins:
-            return False
-        self.checkins[call] = CheckIn(call, now(), note, self.settings.mycall)
-        self._queue_voice(call)
+        Log a check-in by hand; returns its key, or None if already logged.
+
+        A voice check-in with a valid callsign is announced in the next voice
+        check-ins status, unless ``announce`` is false. Leave the callsign
+        blank, or type "??", for a station you couldn't copy.
+        """
+        key = self._key(base_call(callsign.strip()))
+        if key is None:
+            return None
+        self.checkins[key] = CheckIn(
+            key, now(), note, self.settings.mycall, via=via, announce=announce
+        )
+        self._update_voice(key)
         self._changed()
-        return True
+        return key
 
-    def edit_checkin(self, callsign: str, new_callsign: str, text: str) -> bool:
-        """Change a check-in's call or text; False if the new call is taken."""
+    def edit_checkin(
+        self,
+        callsign: str,
+        new_callsign: str,
+        text: str,
+        via: str | None = None,
+        announce: bool | None = None,
+    ) -> bool:
+        """Change a check-in; False if the new callsign is already logged."""
         old = self.checkins.get(callsign)
-        new_call = base_call(new_callsign.strip())
-        if old is None or not new_call:
+        if old is None:
             return False
-        if new_call != callsign and new_call in self.checkins:
+        key = self._key(base_call(new_callsign.strip()), keep=callsign)
+        if key is None:
             return False
+        new = attrs.evolve(
+            old,
+            callsign=key,
+            text=text,
+            via=old.via if via is None else via,
+            announce=old.announce if announce is None else announce,
+        )
         # rebuild the dict so the check-in keeps its place in the log
         self.checkins = {
-            (new_call if call == callsign else call): (
-                attrs.evolve(c, callsign=new_call, text=text) if call == callsign else c
-            )
+            (key if call == callsign else call): (new if call == callsign else c)
             for call, c in self.checkins.items()
         }
         self.voice_pending = [
-            new_call if call == callsign else call for call in self.voice_pending
+            key if call == callsign else call for call in self.voice_pending
         ]
+        self._update_voice(key)
         self._changed()
         return True
+
+    def set_announce(self, callsign: str, announce: bool) -> None:
+        """Include a voice check-in in the voice status, or leave it out."""
+        checkin = self.checkins.get(callsign)
+        if checkin is not None:
+            checkin.announce = announce
+            self._update_voice(callsign)
+            self._changed()
 
     def remove_checkin(self, callsign: str) -> None:
         if self.checkins.pop(callsign, None) is not None:
@@ -329,6 +400,15 @@ class Net:
     def voice_status(self, calls: list[str] | None = None) -> str:
         calls = self.voice_pending if calls is None else calls
         return " ".join([self.settings.voice_prefix, *calls])
+
+    def _update_voice(self, key: str) -> None:
+        """Queue or unqueue a check-in for the voice status."""
+        c = self.checkins[key]
+        wanted = c.via == "voice" and c.announce and not c.announced and valid_call(key)
+        if wanted and key not in self.voice_pending:
+            self._queue_voice(key)
+        elif not wanted and key in self.voice_pending:
+            self.voice_pending.remove(key)
 
     def _queue_voice(self, call: str) -> None:
         """Add ``call`` to the voice status, sending it once it's full."""
@@ -356,9 +436,41 @@ class Net:
         except NotConnected:
             log.warning("Not connected; voice check-ins stay pending")
             return False
+        for call in self.voice_pending:
+            if call in self.checkins:
+                self.checkins[call].announced = True
         self.voice_pending = []
         self._changed()
         return True
+
+    def relay_announcement(self, source: str, text: str) -> list[str]:
+        """
+        Send an announcement relayed from ``source`` as one or more statuses
+        ("W1AW: Field day is June 28 at the fairgrounds").
+
+        Returns the statuses sent; raises NotConnected if the connection is
+        down.
+        """
+        assert self.client is not None, "the net isn't open"
+        call = base_call(source.strip())
+        words = (f"{call}:" if call else "").split() + text.split()
+        statuses: list[str] = []
+        line = ""
+        for word in words:
+            if line and len(line) + 1 + len(word) > STATUS_MAX:
+                statuses.append(line)
+                line = ""
+            line = f"{line} {word}" if line else word[:STATUS_MAX]
+        if line:
+            statuses.append(line)
+        for status in statuses:
+            self.client.send_status(status)
+        self._changed()
+        return statuses
+
+    def set_ncs(self, ncs: str) -> None:
+        self.settings.ncs = ncs.strip().upper()
+        self._changed()
 
     def set_bulletin(self, text: str, group: str, minutes: float, on: bool) -> None:
         """Change the bulletin; when it's on, it's sent now and every ``minutes``."""
@@ -378,7 +490,10 @@ class Net:
             "opened": self.opened.isoformat() if self.opened else None,
             "closed": self.closed.isoformat() if self.closed else None,
             "checkins": [
-                {**attrs.asdict(c), "time": c.time.isoformat()}
+                {
+                    **attrs.asdict(c),
+                    "time": c.time.isoformat(),
+                }
                 for c in self.checkins.values()
             ],
             "voice_pending": list(self.voice_pending),
@@ -398,13 +513,13 @@ class Net:
         net = cls(settings)
         opened = backup.get("opened")
         net.opened = datetime.datetime.fromisoformat(opened) if opened else None
+        fields = attrs.fields_dict(CheckIn)
         for c in backup.get("checkins", []):
-            checkin = CheckIn(
-                callsign=c["callsign"],
-                time=datetime.datetime.fromisoformat(c["time"]),
-                text=c["text"],
-                heard_from=c["heard_from"],
-            )
+            c = {k: v for k, v in c.items() if k in fields}
+            c["time"] = datetime.datetime.fromisoformat(c["time"])
+            if "via" not in c and c.get("heard_from") == settings.mycall:
+                c["via"] = "voice"  # saved before check-ins had "via"
+            checkin = CheckIn(**c)
             net.checkins[checkin.callsign] = checkin
         net.voice_pending = [
             c for c in backup.get("voice_pending", []) if c in net.checkins
@@ -419,12 +534,25 @@ class Net:
             recipient.upper(), text, ack=True, overflow=OverflowDisposition.Continue
         )
         for future in futures:
-            entry = SentMessage(now(), recipient.upper(), text)
+            entry = SentMessage(now(), recipient.upper(), text, future=future)
             future.add_done_callback(lambda f, e=entry: self._ack(f, e))
             self.sent.append(entry)
             sent.append(entry)
         self._changed()
         return sent
+
+    def cancel_message(self, entry: SentMessage) -> bool:
+        """Stop resending a message that hasn't been acked yet."""
+        if entry.future is None or entry.future.done():
+            return False
+        if self.client is not None:
+            for number, om in list(self.client.outstanding.items()):
+                if om.future is entry.future:
+                    if om.timer is not None:
+                        om.timer.cancel()
+                    del self.client.outstanding[number]
+        entry.future.cancel()  # _ack marks it cancelled
+        return True
 
     def _ack(self, future: asyncio.Future, entry: SentMessage) -> None:
         if future.cancelled():
@@ -469,17 +597,21 @@ class Net:
     def checkins_csv(self) -> str:
         out = io.StringIO()
         writer = csv.writer(out)
-        writer.writerow(["callsign", "time_utc", "message", "heard_from", "lat", "lon"])
+        writer.writerow(
+            ["callsign", "time_utc", "via", "message", "heard_from", "lat", "lon", "ncs"]
+        )
         for c in self.checkins.values():
             lat, lon = self.positions.get(c.callsign, ("", ""))
             writer.writerow(
                 [
                     c.callsign,
                     c.time.strftime("%Y-%m-%d %H:%M:%S"),
+                    c.via,
                     c.text,
                     c.heard_from,
                     lat,
                     lon,
+                    self.settings.ncs,
                 ]
             )
         return out.getvalue()
