@@ -78,6 +78,40 @@ class UTCDateTime(TypeDecorator):
         return value.replace(tzinfo=datetime.UTC)
 
 
+class TNC2Text(TypeDecorator):
+    """
+    TNC2 text that keeps every byte heard.
+
+    Frames decode info bytes that aren't valid UTF-8 (Latin-1 or CP437
+    comments, GBK, binary) as surrogate escapes, which a database won't
+    take as text. Valid UTF-8 is stored as text, as usual; on SQLite any
+    other line is stored as its exact bytes (a BLOB, which a TEXT column
+    holds as well) and read back as the same str. Other databases get the
+    undecodable bytes as backslash escapes (``\\xb0``) instead.
+    """
+
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            if dialect.name == "sqlite":
+                return value.encode("utf-8", "surrogateescape")
+            return value.encode("utf-8", "surrogateescape").decode(
+                "utf-8", "backslashreplace"
+            )
+        return value
+
+    def process_result_value(self, value, dialect):
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "surrogateescape")
+        return value
+
+
 class Base(MappedAsDataclass, DeclarativeBase):
     type_annotation_map = {datetime.datetime: UTCDateTime}
 
@@ -88,8 +122,11 @@ class PacketRecord(Base):
     __tablename__ = "packet"
     __table_args__ = (Index("ix_packet_state_due", "state", "due"),)
 
-    tnc2: Mapped[str] = mapped_column(String)
-    """The frame in TNC2 monitor format (APRS-IS text)."""
+    tnc2: Mapped[str] = mapped_column(TNC2Text)
+    """
+    The frame in TNC2 monitor format (APRS-IS text), as ``str(frame)``: info
+    bytes that aren't UTF-8 are surrogate escapes, kept exactly.
+    """
     state: Mapped[PacketState] = mapped_column(index=True)
     created: Mapped[datetime.datetime] = mapped_column(default_factory=utcnow, index=True)
     """When the frame was heard, sent, or queued."""
