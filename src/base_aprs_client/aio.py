@@ -227,6 +227,7 @@ class AsyncClient:
     """Received frames waiting to be logged to the store, with when they arrived."""
     _record_wakeup: asyncio.Event = attrs.field(init=False, default=None)
     _recorder: asyncio.Task | None = attrs.field(init=False, default=None)
+    _sender: asyncio.Task | None = attrs.field(init=False, default=None)
     _started: bool = attrs.field(default=False, init=False)
     _closing: bool = attrs.field(default=False, init=False)
 
@@ -293,7 +294,7 @@ class AsyncClient:
             self._unrecorded = collections.deque(maxlen=self.max_queued_frames or None)
             self._record_wakeup = asyncio.Event()
             self._recorder = self._spawn(self._run_recorder())
-            self._spawn(self._run_sender())
+            self._sender = self._spawn(self._run_sender())
         return self
 
     async def close(self) -> None:
@@ -304,14 +305,22 @@ class AsyncClient:
         for om in list(self.outstanding.values()):
             self._finish(om)
             om.future.cancel()
+        # The store loops are asked to stop rather than cancelled: cancelling
+        # a database call part way leaves its connection checked out with a
+        # transaction open, which locks a SQLite file ("database is locked"
+        # for the next client) or breaks a shared in-memory connection.
+        store_loops = (self._recorder, self._sender)
         tasks = [
             task
             for task in self._tasks
-            if task is not asyncio.current_task() and task is not self._recorder
+            if task is not asyncio.current_task() and task not in store_loops
         ]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self._sender is not None:
+            self._wakeup.set()  # its loop ends now that _closing is set
+            await asyncio.gather(self._sender, return_exceptions=True)
         if self._recorder is not None:
             # nothing more is received now: log what was, then stop
             self._record_wakeup.set()

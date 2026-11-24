@@ -97,3 +97,21 @@ async def test_log_failure_does_not_stop_receiving(caplog, db_url):
     await client.close()
     assert "Could not log 1 received frame(s)" in caplog.text
     await store.close()
+
+
+async def test_close_does_not_break_the_store():
+    """close() stops the send-queue loop between queries, never in the middle of one.
+
+    Cancelling a query part way left its connection checked out mid-transaction:
+    the default in-memory store lost its table (or hung), and a SQLite file
+    stayed locked for the next client.
+    """
+    store = PacketStore()  # in-memory: one shared connection
+    proto: Any = FakeProtocol()
+    client = AsyncClient(ME, reconnect=None, store=store)
+    await client.start(proto)
+    proto.feed(status(1))
+    await settle(2)  # the send-queue loop is in its first query now
+    await asyncio.wait_for(client.close(), 5)
+    assert await asyncio.wait_for(received(store), 5) == [status(1)]
+    await store.close()
