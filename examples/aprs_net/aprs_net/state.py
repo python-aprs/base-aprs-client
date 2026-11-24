@@ -5,13 +5,18 @@ The net lives at module level, not in ``NetState``, because there is one
 radio station per server, shared by everyone who opens the page. Each page
 polls it once a second (``tick``) and copies it into state when it changes.
 Run the backend with a single worker so every page sees the same net.
+
+Each browser also keeps a copy of the net's settings and check-ins in
+localStorage. If the server restarts mid-net, the setup page offers to
+reopen the net with them.
 """
 
+import json
 import os
 
 import reflex as rx
 
-from .net import Net, Settings
+from .net import Net, Settings, base_call
 
 NET: Net | None = None
 
@@ -42,6 +47,29 @@ def _iso(dt) -> str:
     return dt.isoformat(timespec="seconds")
 
 
+def _form(s: Settings) -> dict[str, str]:
+    """The setup form's fields for ``s``."""
+    label = {v: k for k, v in CONNECTIONS.items()}
+    return {
+        "mycall": s.mycall,
+        "connection": label.get(s.connection, "APRS-IS"),
+        "address": s.address,
+        "passcode": s.passcode,
+        "path": s.path,
+        "net_name": s.net_name,
+        "checkin_reply": s.checkin_reply,
+        "bulletin_group": s.bulletin_group,
+        "bulletin_text": s.bulletin_text,
+        "bulletin_minutes": f"{s.bulletin_minutes:g}",
+        "status_text": s.status_text,
+        "status_minutes": f"{s.status_minutes:g}",
+        "beacon_lat": "" if s.beacon_lat is None else str(s.beacon_lat),
+        "beacon_lon": "" if s.beacon_lon is None else str(s.beacon_lon),
+        "beacon_symbol": s.beacon_symbol,
+        "beacon_minutes": f"{s.beacon_minutes:g}",
+    }
+
+
 class NetState(rx.State):
     phase: str = "setup"  # setup, running or closed
     connected: bool = False
@@ -54,37 +82,53 @@ class NetState(rx.State):
     checkins: list[dict[str, str]] = []
     heard: list[dict[str, str]] = []
     sent: list[dict[str, str]] = []
+    voice_pending: str = ""
+    """The voice check-in status waiting to be sent, if any."""
+    bulletin_on: bool = True
+    editing: str = ""
+    """The callsign of the check-in being edited."""
+    backup: str = rx.LocalStorage("", name="aprs_net_backup")
+    """This browser's copy of the net, as JSON."""
+    restore_info: str = ""
+    """Describes the backup the setup page offers to restore."""
     version: int = -1
+
+    def _saved(self) -> dict | None:
+        """The backup of a net that was still open, if this browser has one."""
+        try:
+            saved = json.loads(self.backup) if self.backup else None
+        except ValueError:
+            return None
+        if not isinstance(saved, dict) or saved.get("closed"):
+            return None
+        return saved
 
     @rx.event
     def load(self):
         """Fill the setup form and show the current net, if one is open."""
-        s = NET.settings if NET is not None else default_settings()
-        label = {v: k for k, v in CONNECTIONS.items()}
-        self.form = {
-            "mycall": s.mycall,
-            "connection": label.get(s.connection, "APRS-IS"),
-            "address": s.address,
-            "passcode": s.passcode,
-            "path": s.path,
-            "net_name": s.net_name,
-            "checkin_reply": s.checkin_reply,
-            "bulletin_group": s.bulletin_group,
-            "bulletin_text": s.bulletin_text,
-            "bulletin_minutes": f"{s.bulletin_minutes:g}",
-            "status_text": s.status_text,
-            "status_minutes": f"{s.status_minutes:g}",
-            "beacon_lat": "" if s.beacon_lat is None else str(s.beacon_lat),
-            "beacon_lon": "" if s.beacon_lon is None else str(s.beacon_lon),
-            "beacon_symbol": s.beacon_symbol,
-            "beacon_minutes": f"{s.beacon_minutes:g}",
-        }
+        self.restore_info = ""
+        if NET is not None:
+            settings = NET.settings
+        elif (saved := self._saved()) is not None:
+            # the server lost the net; offer to pick up where it left off
+            restored = Net.restore(saved)
+            settings = restored.settings
+            count = len(restored.checkins)
+            self.restore_info = (
+                f"{count} check-in{' was' if count == 1 else 's were'} "
+                f"from {settings.net_name} saved in this browser."
+            )
+        else:
+            settings = default_settings()
+        self.form = _form(settings)
         self.version = -1
         self._sync()
 
     @rx.event
     def tick(self, _=None):
-        if NET is not None and NET.version != self.version:
+        if NET is None and self.phase != "setup":
+            self.load()  # the server restarted: offer the backup
+        elif NET is not None and NET.version != self.version:
             self._sync()
 
     def _sync(self):
@@ -93,7 +137,10 @@ class NetState(rx.State):
             self.phase = "setup"
             return
         self.version = net.version
+        self.backup = json.dumps(net.backup())
         self.phase = "running" if net.running else "closed"
+        self.bulletin_on = net.settings.bulletin_on
+        self.voice_pending = net.voice_status() if net.voice_pending else ""
         self.connected = net.connected
         self.net_name = net.settings.net_name
         self.mycall = net.settings.mycall.upper()
@@ -145,6 +192,8 @@ class NetState(rx.State):
             bulletin_group=f.get("bulletin_group") or "BLN0",
             bulletin_text=f.get("bulletin_text", ""),
             bulletin_minutes=_float(f.get("bulletin_minutes", "")) or 0,
+            bulletin_on=bool(f.get("bulletin_text"))
+            and (_float(f.get("bulletin_minutes", "")) or 0) > 0,
             status_text=f.get("status_text", ""),
             status_minutes=_float(f.get("status_minutes", "")) or 0,
             beacon_lat=_float(f.get("beacon_lat", "")),
@@ -152,12 +201,14 @@ class NetState(rx.State):
             beacon_symbol=f.get("beacon_symbol") or "/r",
             beacon_minutes=_float(f.get("beacon_minutes", "")) or 0,
         )
-        net = Net(settings)
+        saved = self._saved() if f.get("restore") else None
+        net = Net.restore(saved, settings) if saved else Net(settings)
         try:
             await net.open()
         except (OSError, ValueError) as exc:
             return rx.toast.error(f"Could not connect: {exc}")
         NET = net
+        self.restore_info = ""
         self._sync()
 
     @rx.event
@@ -171,6 +222,7 @@ class NetState(rx.State):
         global NET  # noqa: PLW0603
         if NET is not None and not NET.running:
             NET = None
+            self.backup = ""
         self.load()
 
     @rx.event
@@ -181,6 +233,56 @@ class NetState(rx.State):
         if not NET.add_checkin(call, form_data.get("note") or "manual"):
             return rx.toast.warning(f"{call.upper() or 'That'} is already checked in")
         self._sync()
+
+    @rx.event
+    def edit_checkin(self, callsign: str):
+        self.editing = callsign
+
+    @rx.event
+    def cancel_edit(self):
+        self.editing = ""
+
+    @rx.event
+    def save_checkin(self, form_data: dict[str, str]):
+        if NET is None or not self.editing:
+            return
+        call = form_data.get("callsign", "")
+        if not NET.edit_checkin(self.editing, call, form_data.get("text", "")):
+            return rx.toast.error(f"{base_call(call) or 'That'} is already checked in")
+        self.editing = ""
+        self._sync()
+
+    @rx.event
+    def announce_voice(self):
+        if NET is not None and not NET.announce_voice_checkins():
+            return rx.toast.error("Not connected; try again when it reconnects")
+        self._sync()
+
+    @rx.event
+    def save_bulletin(self, form_data: dict[str, str]):
+        if NET is None or not NET.running:
+            return
+        f = {k: v.strip() for k, v in form_data.items()}
+        NET.set_bulletin(
+            f.get("bulletin_text", ""),
+            f.get("bulletin_group", ""),
+            _float(f.get("bulletin_minutes", "")) or 0,
+            NET.settings.bulletin_on,
+        )
+        self.form = {**self.form, **f}
+        self._sync()
+        if "bulletin" in NET.timers:
+            return rx.toast.success("Bulletin sent")
+
+    @rx.event
+    def toggle_bulletin(self, on: bool):
+        if NET is None or not NET.running:
+            return
+        s = NET.settings
+        NET.set_bulletin(s.bulletin_text, s.bulletin_group, s.bulletin_minutes, on)
+        self._sync()
+        if on and "bulletin" not in NET.timers:
+            return rx.toast.error("Enter the bulletin and how often to send it")
 
     @rx.event
     def remove_checkin(self, callsign: str):

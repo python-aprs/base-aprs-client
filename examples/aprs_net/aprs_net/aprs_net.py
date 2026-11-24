@@ -103,6 +103,19 @@ def setup_view() -> rx.Component:
                     width="100%",
                 ),
             ),
+            rx.cond(
+                NetState.restore_info,
+                rx.callout.root(
+                    rx.callout.icon(rx.icon("history")),
+                    rx.callout.text(NetState.restore_info),
+                    rx.checkbox(
+                        "Restore them when the net opens",
+                        name="restore",
+                        default_checked=True,
+                    ),
+                    width="100%",
+                ),
+            ),
             rx.button("Open the net", type="submit", size="3"),
             spacing="4",
             width="100%",
@@ -115,7 +128,47 @@ def setup_view() -> rx.Component:
 # -- running ------------------------------------------------------------------
 
 
+def checkin_edit_row(c: rx.Var) -> rx.Component:
+    return rx.table.row(
+        rx.table.cell(
+            rx.form(
+                rx.hstack(
+                    rx.input(
+                        name="callsign",
+                        default_value=c["callsign"],
+                        width="8em",
+                        required=True,
+                        auto_focus=True,
+                    ),
+                    rx.input(name="text", default_value=c["text"], flex="1"),
+                    rx.button("Save", type="submit", size="1"),
+                    rx.button(
+                        "Cancel",
+                        type="button",
+                        size="1",
+                        variant="soft",
+                        color_scheme="gray",
+                        on_click=NetState.cancel_edit,
+                    ),
+                    width="100%",
+                    align="center",
+                ),
+                on_submit=NetState.save_checkin,
+            ),
+            col_span=5,
+        ),
+    )
+
+
 def checkin_row(c: rx.Var) -> rx.Component:
+    return rx.cond(
+        NetState.editing == c["callsign"],
+        checkin_edit_row(c),
+        checkin_view_row(c),
+    )
+
+
+def checkin_view_row(c: rx.Var) -> rx.Component:
     return rx.table.row(
         rx.table.cell(
             rx.link(
@@ -129,13 +182,24 @@ def checkin_row(c: rx.Var) -> rx.Component:
         rx.table.cell(c["text"]),
         rx.table.cell(rx.text(c["position"], size="1", color_scheme="gray")),
         rx.table.cell(
-            rx.icon_button(
-                rx.icon("x", size=14),
-                size="1",
-                variant="ghost",
-                color_scheme="gray",
-                on_click=NetState.remove_checkin(c["callsign"]),
-                aria_label="Remove check-in",
+            rx.hstack(
+                rx.icon_button(
+                    rx.icon("pencil", size=14),
+                    size="1",
+                    variant="ghost",
+                    color_scheme="gray",
+                    on_click=NetState.edit_checkin(c["callsign"]),
+                    aria_label="Edit check-in",
+                ),
+                rx.icon_button(
+                    rx.icon("x", size=14),
+                    size="1",
+                    variant="ghost",
+                    color_scheme="gray",
+                    on_click=NetState.remove_checkin(c["callsign"]),
+                    aria_label="Remove check-in",
+                ),
+                spacing="3",
             )
         ),
     )
@@ -176,6 +240,26 @@ def checkins_card() -> rx.Component:
             ),
             on_submit=NetState.add_checkin,
             reset_on_submit=True,
+        ),
+        rx.cond(
+            NetState.voice_pending,
+            rx.hstack(
+                rx.text(
+                    "Sent as a status once it fills up: ",
+                    rx.code(NetState.voice_pending),
+                    size="2",
+                    color_scheme="gray",
+                ),
+                rx.spacer(),
+                rx.button(
+                    "Send now",
+                    size="1",
+                    variant="soft",
+                    on_click=NetState.announce_voice,
+                ),
+                width="100%",
+                align="center",
+            ),
         ),
     )
 
@@ -223,6 +307,56 @@ def message_card() -> rx.Component:
     )
 
 
+def bulletin_card() -> rx.Component:
+    return section(
+        "Bulletin",
+        rx.hstack(
+            rx.switch(
+                checked=NetState.bulletin_on,
+                on_change=NetState.toggle_bulletin,
+            ),
+            rx.text(
+                rx.cond(NetState.bulletin_on, "On", "Off"),
+                size="2",
+            ),
+            align="center",
+        ),
+        rx.form(
+            rx.vstack(
+                rx.input(
+                    name="bulletin_text",
+                    default_value=NetState.form["bulletin_text"],
+                    placeholder="Net tonight 7 PM on 146.52",
+                    width="100%",
+                ),
+                rx.hstack(
+                    rx.input(
+                        name="bulletin_group",
+                        default_value=NetState.form["bulletin_group"],
+                        placeholder="BLN0",
+                        width="6em",
+                    ),
+                    rx.text("every", size="2"),
+                    rx.input(
+                        name="bulletin_minutes",
+                        default_value=NetState.form["bulletin_minutes"],
+                        type="number",
+                        min=1,
+                        width="5em",
+                    ),
+                    rx.text("minutes", size="2"),
+                    rx.spacer(),
+                    rx.button("Save", type="submit", variant="soft"),
+                    width="100%",
+                    align="center",
+                ),
+                width="100%",
+            ),
+            on_submit=NetState.save_bulletin,
+        ),
+    )
+
+
 def heard_row(h: rx.Var) -> rx.Component:
     return rx.hstack(
         rx.text(local_time(h["time"]), size="1", color_scheme="gray"),
@@ -253,7 +387,13 @@ def running_view() -> rx.Component:
     return rx.vstack(
         rx.grid(
             checkins_card(),
-            rx.vstack(message_card(), traffic_card(), width="100%", spacing="4"),
+            rx.vstack(
+                message_card(),
+                bulletin_card(),
+                traffic_card(),
+                width="100%",
+                spacing="4",
+            ),
             columns=rx.breakpoints(initial="1", md="2"),
             spacing="4",
             width="100%",

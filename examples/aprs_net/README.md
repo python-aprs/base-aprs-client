@@ -11,13 +11,22 @@ Net"). A check-in that names other callsigns ("checking in with N7DEM") logs
 those stations too. From the page you can:
 
 * watch check-ins arrive, with each station's last position when it beacons
-* log voice check-ins by hand, and remove mistakes
+* log voice check-ins by hand. They're announced in a status ("Voice
+  check-ins: W1AW N7DEM ..."), sent once when it fills APRS's 62-character
+  status limit, or when you press Send now or close the net
+* edit or remove check-ins
 * send messages and see when they're acked
 * send a bulletin, status and position beacon when the net opens and then on
-  a timer
+  a timer. The bulletin can be changed, and switched off and on, while the
+  net runs
 * see every packet heard and sent
-* close the net, which sends a summary status ("Tuesday Night Net closed with
-  12 check-ins"), and download the check-ins as CSV
+* close the net, which sends a summary status with the end time in the
+  server's time zone ("Tuesday Night Net closed 20:15 PST with 12
+  check-ins"), and download the check-ins as CSV
+
+Each browser keeps a copy of the net's settings and check-ins in
+localStorage. If the server stops mid-net, restart it and the page offers to
+reopen the net with the saved check-ins.
 
 It connects to APRS-IS, a KISS TNC on TCP (Dire Wolf listens on
 `localhost:8001`), or a serial KISS TNC.

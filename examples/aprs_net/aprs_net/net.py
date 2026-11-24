@@ -6,8 +6,10 @@ sending a message to net control, and each new station gets one reply
 ("ACK N0CALL, thanks for checking in"). A check-in message may name other
 stations too ("checking in with W1AW"); each callsign in it is logged. Net
 control can also log check-ins by hand (for voice check-ins), send messages,
-and transmit a bulletin, status and position beacon on a timer. Closing the
-net sends a summary status.
+and transmit a bulletin, status and position beacon on a timer. Check-ins
+logged by hand are announced in a status ("Voice check-ins: W1AW N7DEM"),
+sent once each time it fills up. Closing the net sends a summary status with
+the end time and check-in count.
 """
 
 import asyncio
@@ -24,13 +26,21 @@ import attrs
 from aprs import APRSFrame, Message, Position
 from aprs.position import PositionMixin
 
-from base_aprs_client import AsyncClient, MaximumRetryExceeded, MessageRejected
+from base_aprs_client import (
+    AsyncClient,
+    MaximumRetryExceeded,
+    MessageRejected,
+    NotConnected,
+)
 from base_aprs_client.common import OverflowDisposition, parse_ack
 
 log = logging.getLogger(__name__)
 
 CALLSIGN = re.compile(r"\b([A-Z]{1,2}[0-9][A-Z]{1,4}|[0-9][A-Z][0-9][A-Z]{1,3})\b")
 """Amateur callsigns, without SSID: N0CALL, W1AW, KF7HVM, 2E0ABC."""
+
+STATUS_MAX = 62
+"""The longest status text APRS allows (without a timestamp)."""
 
 
 def now() -> datetime.datetime:
@@ -55,9 +65,13 @@ class Settings:
     path: str = "WIDE1-1"
     net_name: str = "APRS Net"
     checkin_reply: str = "ACK {calls}, thanks for checking in to {net}"
+    voice_prefix: str = "Voice check-ins:"
+    """Starts the status that announces check-ins logged by hand."""
     bulletin_group: str = "BLN0"
     bulletin_text: str = ""
     bulletin_minutes: float = 0
+    bulletin_on: bool = True
+    """Net control can switch the bulletin off and on while the net runs."""
     status_text: str = ""
     status_minutes: float = 0
     beacon_lat: float | None = None
@@ -133,12 +147,14 @@ class Net:
     positions: dict[str, tuple[float, float]] = attrs.field(factory=dict)
     heard: deque[Heard] = attrs.field(factory=lambda: deque(maxlen=200))
     sent: list[SentMessage] = attrs.field(factory=list)
+    voice_pending: list[str] = attrs.field(factory=list)
+    """Hand-logged check-ins not announced in a status yet."""
     opened: datetime.datetime | None = None
     closed: datetime.datetime | None = None
     version: int = 0
     """Goes up on every change, so a UI can poll cheaply."""
     client: AsyncClient | None = None
-    _tasks: list[asyncio.Task] = attrs.field(factory=list)
+    _timers: dict[str, asyncio.Task] = attrs.field(factory=dict)
 
     @property
     def running(self) -> bool:
@@ -162,35 +178,61 @@ class Net:
         client.on_message(self._message)
         await client.start()
         self.client = client
-        self.opened, self.closed = now(), None
+        self.opened = self.opened or now()  # a restored net keeps its time
+        self.closed = None
         s = self.settings
-        for minutes, send in [
-            (s.bulletin_minutes, self.send_bulletin if s.bulletin_text else None),
-            (s.status_minutes, self.send_status if s.status_text else None),
-            (s.beacon_minutes, self.send_beacon if s.beacon_lat is not None else None),
-        ]:
-            if send is not None and minutes > 0:
-                self._tasks.append(asyncio.ensure_future(self._every(minutes, send)))
+        if s.status_text and s.status_minutes > 0:
+            self._start_timer("status", s.status_minutes, self.send_status)
+        if s.beacon_lat is not None and s.beacon_minutes > 0:
+            self._start_timer("beacon", s.beacon_minutes, self.send_beacon)
+        self._start_bulletin()
         self._changed()
 
     async def close(self, summary: bool = True) -> None:
         """Send the summary status (with ``summary``) and disconnect."""
         if self.client is None:
             return
-        for task in self._tasks:
+        timers = list(self._timers.values())
+        for task in timers:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks.clear()
+        await asyncio.gather(*timers, return_exceptions=True)
+        self._timers.clear()
+        closed = now()
         if summary and self.connected:
-            self.client.send_status(self.summary())
+            self.announce_voice_checkins()
+            self.client.send_status(self.summary(closed))
         await self.client.close()
-        self.closed = now()
+        self.closed = closed
         self._changed()
 
-    def summary(self) -> str:
+    def summary(self, at: datetime.datetime | None = None) -> str:
+        """The closing status: when the net closed and how many checked in."""
         count = len(self.checkins)
         noun = "check-in" if count == 1 else "check-ins"
-        return f"{self.settings.net_name} closed with {count} {noun}"
+        end = (at or self.closed or now()).astimezone().strftime("%H:%M %Z")
+        return f"{self.settings.net_name} closed {end} with {count} {noun}"
+
+    @property
+    def timers(self) -> list[str]:
+        """The timed transmissions running now: bulletin, status, beacon."""
+        return list(self._timers)
+
+    def _start_timer(self, name: str, minutes: float, send: Callable[[], Any]) -> None:
+        """Run ``send`` now and every ``minutes``, replacing timer ``name``."""
+        self._stop_timer(name)
+        self._timers[name] = asyncio.ensure_future(self._every(minutes, send))
+
+    def _stop_timer(self, name: str) -> None:
+        task = self._timers.pop(name, None)
+        if task is not None:
+            task.cancel()
+
+    def _start_bulletin(self) -> None:
+        s = self.settings
+        if s.bulletin_on and s.bulletin_text and s.bulletin_minutes > 0:
+            self._start_timer("bulletin", s.bulletin_minutes, self.send_bulletin)
+        else:
+            self._stop_timer("bulletin")
 
     async def _every(self, minutes: float, send: Callable[[], Any]) -> None:
         while True:
@@ -235,17 +277,130 @@ class Net:
     # -- net control actions --
 
     def add_checkin(self, callsign: str, note: str = "manual") -> bool:
-        """Log a check-in by hand; False if it's already logged or not a callsign."""
+        """
+        Log a check-in by hand; False if it's already logged or not a callsign.
+
+        The call is announced in the next voice check-in status.
+        """
         call = base_call(callsign.strip())
         if not call or call in self.checkins:
             return False
         self.checkins[call] = CheckIn(call, now(), note, self.settings.mycall)
+        self._queue_voice(call)
+        self._changed()
+        return True
+
+    def edit_checkin(self, callsign: str, new_callsign: str, text: str) -> bool:
+        """Change a check-in's call or text; False if the new call is taken."""
+        old = self.checkins.get(callsign)
+        new_call = base_call(new_callsign.strip())
+        if old is None or not new_call:
+            return False
+        if new_call != callsign and new_call in self.checkins:
+            return False
+        # rebuild the dict so the check-in keeps its place in the log
+        self.checkins = {
+            (new_call if call == callsign else call): (
+                attrs.evolve(c, callsign=new_call, text=text) if call == callsign else c
+            )
+            for call, c in self.checkins.items()
+        }
+        self.voice_pending = [
+            new_call if call == callsign else call for call in self.voice_pending
+        ]
         self._changed()
         return True
 
     def remove_checkin(self, callsign: str) -> None:
         if self.checkins.pop(callsign, None) is not None:
+            if callsign in self.voice_pending:
+                self.voice_pending.remove(callsign)
             self._changed()
+
+    def voice_status(self, calls: list[str] | None = None) -> str:
+        calls = self.voice_pending if calls is None else calls
+        return " ".join([self.settings.voice_prefix, *calls])
+
+    def _queue_voice(self, call: str) -> None:
+        """Add ``call`` to the voice status, sending it once it's full."""
+        if (
+            self.voice_pending
+            and len(self.voice_status([*self.voice_pending, call])) > STATUS_MAX
+        ):
+            self.announce_voice_checkins()
+        self.voice_pending.append(call)
+        # send now if a typical callsign wouldn't fit any more
+        if len(self.voice_status()) + len(" N0CALL") > STATUS_MAX:
+            self.announce_voice_checkins()
+
+    def announce_voice_checkins(self) -> bool:
+        """
+        Send the pending voice check-ins as a status.
+
+        Returns False, keeping them pending, if there are none or the
+        connection is down.
+        """
+        if not self.voice_pending or self.client is None:
+            return False
+        try:
+            self.client.send_status(self.voice_status())
+        except NotConnected:
+            log.warning("Not connected; voice check-ins stay pending")
+            return False
+        self.voice_pending = []
+        self._changed()
+        return True
+
+    def set_bulletin(self, text: str, group: str, minutes: float, on: bool) -> None:
+        """Change the bulletin; when it's on, it's sent now and every ``minutes``."""
+        s = self.settings
+        s.bulletin_text, s.bulletin_group = text, group or "BLN0"
+        s.bulletin_minutes, s.bulletin_on = minutes, on
+        if self.running:
+            self._start_bulletin()
+        self._changed()
+
+    # -- saving and restoring --
+
+    def backup(self) -> dict[str, Any]:
+        """The settings and check-ins as JSON-friendly data."""
+        return {
+            "settings": attrs.asdict(self.settings),
+            "opened": self.opened.isoformat() if self.opened else None,
+            "closed": self.closed.isoformat() if self.closed else None,
+            "checkins": [
+                {**attrs.asdict(c), "time": c.time.isoformat()}
+                for c in self.checkins.values()
+            ],
+            "voice_pending": list(self.voice_pending),
+        }
+
+    @classmethod
+    def restore(cls, backup: dict[str, Any], settings: Settings | None = None) -> "Net":
+        """
+        A net with the check-ins from ``backup``, not opened yet.
+
+        Uses the backup's settings unless ``settings`` is given.
+        """
+        if settings is None:
+            known = attrs.fields_dict(Settings)
+            saved = backup.get("settings", {})
+            settings = Settings(**{k: v for k, v in saved.items() if k in known})
+        net = cls(settings)
+        opened = backup.get("opened")
+        net.opened = datetime.datetime.fromisoformat(opened) if opened else None
+        for c in backup.get("checkins", []):
+            checkin = CheckIn(
+                callsign=c["callsign"],
+                time=datetime.datetime.fromisoformat(c["time"]),
+                text=c["text"],
+                heard_from=c["heard_from"],
+            )
+            net.checkins[checkin.callsign] = checkin
+        net.voice_pending = [
+            c for c in backup.get("voice_pending", []) if c in net.checkins
+        ]
+        return net
 
     def send_message(self, recipient: str, text: str) -> list[SentMessage]:
         """Send with ack; each part's status updates when the ack comes."""
