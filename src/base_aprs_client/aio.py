@@ -14,11 +14,14 @@ logs every frame to a ``PacketStore`` and transmits its delayed send queue::
 """
 
 import asyncio
+import collections
 import contextlib
+import datetime
 import inspect
 import logging
 import random
 import typing as t
+import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
 import attrs
@@ -26,10 +29,14 @@ from aprs import (
     APRSFrame,
     DataType,
     InformationField,
+    ItemReport,
     Message,
+    ObjectReport,
     Position,
     PositionReport,
     StatusReport,
+    Timestamp,
+    TimestampFormat,
 )
 from aprs.aprsis import create_aprsis_connection
 from aprs.constants import APRSIS_FILTER_PORT, APRSIS_SERVERS
@@ -124,6 +131,55 @@ def kiss_serial_connector(
     return connect
 
 
+DEFAULT_KISS_TCP_PORT = 8001
+DEFAULT_SERIAL_BAUDRATE = 9600
+
+
+def connector_from_url(
+    url: str,
+    user: str,
+    *,
+    passcode: str | int | None = None,
+    filter: str | None = None,
+    kiss_settings: dict | None = None,
+) -> Connector:
+    """
+    A connector for a connection URL; ``user`` is the APRS-IS login.
+
+    - ``aprsis://rotate.aprs2.net:14580?passcode=12345&filter=r/47/-122/50``
+    - ``kiss+tcp://localhost:8001`` (a TNC such as Dire Wolf)
+    - ``kiss+serial:///dev/ttyUSB0?baud=9600`` (or ``kiss+serial://COM3``)
+
+    ``passcode`` and ``filter`` given here win over the URL's.
+    """
+    parts = urllib.parse.urlsplit(url)
+    query = dict(urllib.parse.parse_qsl(parts.query))
+    scheme = parts.scheme.lower()
+    if scheme == "aprsis":
+        if not parts.hostname:
+            raise ValueError(f"{url!r}: no APRS-IS host")
+        return aprsis_connector(
+            user,
+            parts.hostname,
+            parts.port or APRSIS_FILTER_PORT,
+            str(passcode if passcode is not None else query.get("passcode", "-1")),
+            filter if filter is not None else query.get("filter"),
+        )
+    if scheme in ("kiss+tcp", "tcp"):
+        if not parts.hostname:
+            raise ValueError(f"{url!r}: no TNC host")
+        return kiss_tcp_connector(
+            parts.hostname, parts.port or DEFAULT_KISS_TCP_PORT, kiss_settings
+        )
+    if scheme in ("kiss+serial", "serial"):
+        device = parts.netloc + parts.path
+        if not device:
+            raise ValueError(f"{url!r}: no serial device")
+        baud = int(query.get("baud", query.get("baudrate", DEFAULT_SERIAL_BAUDRATE)))
+        return kiss_serial_connector(device, baud, kiss_settings)
+    raise ValueError(f"{url!r}: expected an aprsis://, kiss+tcp:// or kiss+serial:// URL")
+
+
 @attrs.define
 class ReconnectPolicy:
     """Exponential backoff with jitter between reconnect attempts."""
@@ -176,6 +232,16 @@ def _is_ack(message: Message) -> bool:
     return message.number is None and parse_ack(message.text) is not None
 
 
+def _timestamp(when: datetime.datetime | bool) -> Timestamp:
+    """A day/hours/minutes zulu timestamp for ``when`` (True: now)."""
+    if when is True:
+        when = datetime.datetime.now(datetime.UTC)
+    assert isinstance(when, datetime.datetime)
+    if when.tzinfo is None:
+        when = when.astimezone()  # naive: local time
+    return Timestamp(TimestampFormat.DayHoursMinutesZulu, when.astimezone(datetime.UTC))
+
+
 @attrs.define(eq=False)
 class AsyncClient:
     """
@@ -215,7 +281,11 @@ class AsyncClient:
     connect_handlers: list[Callable[[FrameDecodeProtocol], t.Any]] = attrs.field(
         factory=list, init=False
     )
+    transmit_handlers: list[FrameHandler] = attrs.field(factory=list, init=False)
+    _message_queues: list[asyncio.Queue] = attrs.field(factory=list, init=False)
     dropped_frames: int = attrs.field(default=0, init=False)
+    unlogged_frames: int = attrs.field(default=0, init=False)
+    """Received frames not logged to the store because it fell too far behind."""
 
     _frames: asyncio.Queue = attrs.field(init=False, default=None)
     _connected: asyncio.Event = attrs.field(init=False, default=None)
@@ -224,6 +294,11 @@ class AsyncClient:
     _seen: dict[tuple, float] = attrs.field(factory=dict, init=False)
     _reply_ack_stations: set[str] = attrs.field(factory=set, init=False)
     _pending_reply_acks: dict[str, bytes] = attrs.field(factory=dict, init=False)
+    _unrecorded: collections.deque = attrs.field(init=False, default=None)
+    """Received frames waiting to be logged to the store, with when they arrived."""
+    _record_wakeup: asyncio.Event = attrs.field(init=False, default=None)
+    _recorder: asyncio.Task | None = attrs.field(init=False, default=None)
+    _sender: asyncio.Task | None = attrs.field(init=False, default=None)
     _started: bool = attrs.field(default=False, init=False)
     _closing: bool = attrs.field(default=False, init=False)
 
@@ -240,6 +315,32 @@ class AsyncClient:
         **kwargs: t.Any,
     ) -> "AsyncClient":
         connector = aprsis_connector(str(mycall), host, port, passcode, filter)
+        return cls(mycall=mycall, connector=connector, **kwargs)
+
+    @classmethod
+    def connect(
+        cls,
+        mycall: str,
+        url: str,
+        *,
+        passcode: str | int | None = None,
+        filter: str | None = None,
+        kiss_settings: dict | None = None,
+        **kwargs: t.Any,
+    ) -> "AsyncClient":
+        """
+        A client for a connection URL (see ``connector_from_url``)::
+
+            async with AsyncClient.connect("N0CALL-1", "kiss+tcp://localhost:8001") as c:
+                ...
+        """
+        connector = connector_from_url(
+            url,
+            str(mycall),
+            passcode=passcode,
+            filter=filter,
+            kiss_settings=kiss_settings,
+        )
         return cls(mycall=mycall, connector=connector, **kwargs)
 
     @classmethod
@@ -287,7 +388,10 @@ class AsyncClient:
         self._spawn(self._run_reader())
         if self.store is not None:
             await self.store.create_all()
-            self._spawn(self._run_sender())
+            self._unrecorded = collections.deque(maxlen=self.max_queued_frames or None)
+            self._record_wakeup = asyncio.Event()
+            self._recorder = self._spawn(self._run_recorder())
+            self._sender = self._spawn(self._run_sender())
         return self
 
     async def close(self) -> None:
@@ -298,15 +402,33 @@ class AsyncClient:
         for om in list(self.outstanding.values()):
             self._finish(om)
             om.future.cancel()
-        tasks = [task for task in self._tasks if task is not asyncio.current_task()]
+        # The store loops are asked to stop rather than cancelled: cancelling
+        # a database call part way leaves its connection checked out with a
+        # transaction open, which locks a SQLite file ("database is locked"
+        # for the next client) or breaks a shared in-memory connection.
+        store_loops = (self._recorder, self._sender)
+        tasks = [
+            task
+            for task in self._tasks
+            if task is not asyncio.current_task() and task not in store_loops
+        ]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self._sender is not None:
+            self._wakeup.set()  # its loop ends now that _closing is set
+            await asyncio.gather(self._sender, return_exceptions=True)
+        if self._recorder is not None:
+            # nothing more is received now: log what was, then stop
+            self._record_wakeup.set()
+            await asyncio.gather(self._recorder, return_exceptions=True)
         if self.protocol is not None and self.protocol.transport is not None:
             self.protocol.transport.close()
             await asyncio.sleep(0)  # let the transport release the socket/port
         if self._frames is not None:
             self._frames.put_nowait(_CLOSED)
+        for queue in self._message_queues:
+            queue.put_nowait(_CLOSED)
 
     async def __aenter__(self) -> "AsyncClient":
         return await self.start()
@@ -358,6 +480,8 @@ class AsyncClient:
             self._connected.clear()
             if self._frames is not None:
                 self._frames.put_nowait(_CLOSED)
+            for queue in self._message_queues:
+                queue.put_nowait(_CLOSED)
 
     async def _reconnect(self) -> bool:
         if self.reconnect is None or self.connector is None:
@@ -381,10 +505,19 @@ class AsyncClient:
         if not isinstance(frame, APRSFrame):
             return
         if self.store is not None:
-            try:
-                await self.store.record_received(frame)
-            except Exception:  # pylint: disable=broad-except
-                logger.exception("Could not log received frame %s", frame)
+            # logged in batches by _run_recorder, so a slow database never
+            # holds up receiving
+            unrecorded = self._unrecorded
+            if unrecorded.maxlen is not None and len(unrecorded) == unrecorded.maxlen:
+                self.unlogged_frames += 1
+                if self.unlogged_frames == 1 or self.unlogged_frames % 1000 == 0:
+                    logger.warning(
+                        "Packet log is %d frames behind: %d oldest not logged so far",
+                        unrecorded.maxlen,
+                        self.unlogged_frames,
+                    )
+            unrecorded.append((frame, datetime.datetime.now(datetime.UTC)))
+            self._record_wakeup.set()
         info = frame.info
         to_me = isinstance(info, Message) and _same_station(
             info.addressee.decode("latin1"), str(self.mycall)
@@ -393,6 +526,26 @@ class AsyncClient:
             return  # duplicate
         # acks and rejects resolve futures; message handlers don't see them
         self._deliver(frame, to_me and not _is_ack(info))
+        if to_me and not _is_ack(info):
+            for queue in self._message_queues:
+                queue.put_nowait(frame)
+
+    async def _run_recorder(self) -> None:
+        """Log received frames to the store, all waiting frames in one transaction."""
+        store = self.store
+        assert store is not None
+        while True:
+            await self._record_wakeup.wait()
+            self._record_wakeup.clear()
+            heard = list(self._unrecorded)
+            self._unrecorded.clear()
+            if heard:
+                try:
+                    await store.record_received_many(heard)
+                except Exception:  # pylint: disable=broad-except
+                    logger.exception("Could not log %d received frame(s)", len(heard))
+            if self._closing and not self._unrecorded:
+                return
 
     def _handle_message(self, message: Message, frame: APRSFrame) -> bool:
         """Ack, resolve outstanding messages; False if ``message`` is a duplicate."""
@@ -460,6 +613,33 @@ class AsyncClient:
         self.message_handlers.append(handler)
         return handler
 
+    def on_transmit(self, handler: FrameHandler) -> FrameHandler:
+        """Call ``handler(frame)`` (or await it) for every frame this client sends."""
+        self.transmit_handlers.append(handler)
+        return handler
+
+    async def messages(self) -> AsyncIterator[APRSFrame]:
+        """
+        Frames carrying a message to ``mycall``, each once, leaving out acks
+        and rejects (the client handles those). Ends when the client closes::
+
+            async for frame in client.messages():
+                await client.reply(frame, "got it")
+
+        Only messages that arrive after iteration starts are yielded; each
+        ``messages()`` iterator gets every message.
+        """
+        queue: asyncio.Queue = asyncio.Queue()
+        self._message_queues.append(queue)
+        try:
+            while not self._closing:
+                frame = await queue.get()
+                if frame is _CLOSED:
+                    return
+                yield frame
+        finally:
+            self._message_queues.remove(queue)
+
     async def recv(self, timeout: float | None = None) -> APRSFrame:
         """The next frame; raises EOFError once the client is closed."""
         frame = await asyncio.wait_for(self._frames.get(), timeout)
@@ -506,6 +686,8 @@ class AsyncClient:
         self.protocol.write(frame)
         if record and self.store is not None:
             self._spawn(self._record_sent(frame))
+        for handler in self.transmit_handlers:
+            self._call_handler(handler, frame)
 
     async def _record_sent(self, frame: APRSFrame) -> None:
         assert self.store is not None
@@ -598,6 +780,8 @@ class AsyncClient:
             period=self.retry_period,
         )
         self.outstanding[number] = om
+        # cancelling the future is the whole cancel API: stop the retries too
+        future.add_done_callback(lambda f, om=om: f.cancelled() and self._finish(om))
         try:
             self.write(self.prepare_frame(message, frame_path))
         except NotConnected:
@@ -675,19 +859,42 @@ class AsyncClient:
         return frame
 
     def send_position(
-        self, position: Position, path: list[Address] | str | None = None
+        self,
+        position: Position,
+        path: list[Address] | str | None = None,
+        *,
+        comment: str = "",
+        timestamp: datetime.datetime | bool | None = None,
+        messaging: bool = True,
     ) -> APRSFrame:
-        frame = self.prepare_frame(
+        """
+        Send a position report. ``timestamp=True`` stamps it with the
+        current time (or pass a ``datetime``); ``messaging`` says whether
+        this station receives messages (``=``/``@`` rather than ``!``/``/``).
+        """
+        if timestamp:
+            data_type = (
+                DataType.POSITION_W_TIMESTAMP_MSG
+                if messaging
+                else DataType.POSITION_W_TIMESTAMP_NO_MSG
+            )
+        else:
+            data_type = (
+                DataType.POSITION_W_O_TIMESTAMP_MSG
+                if messaging
+                else DataType.POSITION_W_O_TIMESTAMP
+            )
+        return self.send(
             PositionReport(
                 raw=b"",
-                data_type=DataType.POSITION_W_O_TIMESTAMP_MSG,
+                data_type=data_type,
                 data=b"",
                 position=position,
+                timestamp=_timestamp(timestamp) if timestamp else None,
+                comment=comment.encode(),
             ),
             path,
         )
-        self.write(frame)
-        return frame
 
     # -- delayed send queue --
 
@@ -711,6 +918,82 @@ class AsyncClient:
         if self._wakeup is not None:
             self._wakeup.set()
         return record
+
+    async def reply(
+        self,
+        frame: APRSFrame,
+        body: str,
+        ack: bool = False,
+        **kwargs: t.Any,
+    ) -> list[APRSFrame | None]:
+        """``send_message`` to the station that sent ``frame``."""
+        return await self.send_message(frame.source, body, ack=ack, **kwargs)
+
+    def send(
+        self, info: InformationField, path: list[Address] | str | None = None
+    ) -> APRSFrame:
+        """Frame ``info`` from ``mycall`` and transmit it now; returns the frame."""
+        frame = self.prepare_frame(info, path)
+        self.write(frame)
+        return frame
+
+    def send_object(
+        self,
+        name: str,
+        position: Position,
+        comment: str = "",
+        killed: bool = False,
+        timestamp: datetime.datetime | None = None,
+        path: list[Address] | str | None = None,
+    ) -> APRSFrame:
+        """
+        Send an object report: a named thing at ``position``, such as an
+        event or a net's location. ``killed=True`` removes it from maps.
+        """
+        return self.send(
+            ObjectReport(
+                raw=b"",
+                data_type=DataType.OBJECT,
+                data=b"",
+                name=name.encode(),
+                killed=killed,
+                timestamp=_timestamp(timestamp or True),
+                position=position,
+                comment=comment.encode(),
+            ),
+            path,
+        )
+
+    def send_item(
+        self,
+        name: str,
+        position: Position,
+        comment: str = "",
+        killed: bool = False,
+        path: list[Address] | str | None = None,
+    ) -> APRSFrame:
+        """Send an item report: like an object, without a timestamp."""
+        return self.send(
+            ItemReport(
+                raw=b"",
+                data_type=DataType.ITEM,
+                data=b"",
+                name=name.encode(),
+                killed=killed,
+                position=position,
+                comment=comment.encode(),
+            ),
+            path,
+        )
+
+    def send_bulletin(
+        self, text: str, id: str = "0", path: list[Address] | str | None = None
+    ) -> APRSFrame:
+        """
+        Send a bulletin to ``BLN<id>`` (``id`` "0"-"9", or a group name for
+        ``BLN<n><group>``). Bulletins aren't acked.
+        """
+        return self.send(self._message(f"BLN{id}", truncate_message(text), None), path)
 
     async def _run_sender(self) -> None:
         from .store import utcnow  # the db extra is optional

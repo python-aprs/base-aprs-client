@@ -1,10 +1,11 @@
 """AsyncClient behaviour against an in-memory protocol."""
 
 import asyncio
+import datetime
 import logging
 
 import pytest
-from aprs import APRSFrame, InformationField, Position
+from aprs import APRSFrame, InformationField, ObjectReport, Position, PositionReport
 
 from base_aprs_client import (
     AsyncClient,
@@ -435,3 +436,157 @@ async def test_acks_are_not_passed_to_on_message(client, proto):
     assert future.done()
     assert messages == [b"a real message"]
     assert frames == [b"ack2a", b"rej99", b"a real message"]
+
+
+# --- api-review additions ----------------------------------------------------------
+
+
+async def test_cancelling_a_message_stops_retries(client, proto):
+    """#22: future.cancel() is the whole cancel API."""
+    (future,) = client.submit_message(PEER, "hi", ack=True)
+    assert len(client.outstanding) == 1
+    future.cancel()
+    await settle()
+    assert client.outstanding == {}
+    await asyncio.sleep(0.15)  # past several retry periods
+    assert len(proto.written) == 1
+
+
+async def test_on_transmit(client, proto):
+    """#23"""
+    sent = []
+    client.on_transmit(sent.append)
+    client.send_status("hello")
+    proto.feed(incoming("ping{3"))  # our ack is transmitted too
+    await client.recv(1)
+    assert [str(f) for f in sent] == proto.written
+
+
+async def test_messages_skip_acks_and_duplicates(client, proto):
+    """#23"""
+    got = []
+
+    async def collect():
+        async for frame in client.messages():
+            got.append(frame.info.text)
+
+    task = asyncio.ensure_future(collect())
+    await settle()
+    (future,) = client.submit_message(PEER, "out", ack=True)
+    proto.feed(incoming("ack2a"))  # an ack: not a message for the app
+    proto.feed(incoming("one{1"))
+    proto.feed(incoming("one{1"))  # duplicate
+    proto.feed(incoming("two", to="N0CALL-9"))  # not to me
+    proto.feed(incoming("three"))
+    await settle(10)
+    assert future.done()
+    await client.close()
+    await asyncio.wait_for(task, 1)
+    assert got == [b"one", b"three"]
+
+
+async def test_reply(client, proto):
+    """#23"""
+    proto.feed(incoming("ping"))
+    frame = await client.recv(1)
+    await client.reply(frame, "pong")
+    assert proto.written[-1] == f"{ME}>APZ069,WIDE1-1::{PEER} :pong"
+
+
+async def test_send_position_options(client, proto):
+    """#24"""
+    position = Position(lat=49.5, long=-72.75, symbol_code=b">")
+    client.send_position(position, comment="mobile")
+    client.send_position(position, messaging=False)
+    when = datetime.datetime(2026, 11, 9, 23, 45, tzinfo=datetime.UTC)
+    client.send_position(position, timestamp=when, comment="t")
+    client.send_position(position, timestamp=when, messaging=False)
+    assert proto.written == [
+        f"{ME}>APZ069,WIDE1-1:=4930.00N/07245.00W>mobile",
+        f"{ME}>APZ069,WIDE1-1:!4930.00N/07245.00W>",
+        f"{ME}>APZ069,WIDE1-1:@092345z4930.00N/07245.00W>t",
+        f"{ME}>APZ069,WIDE1-1:/092345z4930.00N/07245.00W>",
+    ]
+
+
+async def test_send_position_timestamp_now(client, proto):
+    client.send_position(Position(lat=1, long=2), timestamp=True)
+    info = APRSFrame.from_str(proto.written[0]).info
+    assert isinstance(info, PositionReport) and info.timestamp is not None
+    age = datetime.datetime.now(datetime.UTC) - info.timestamp
+    assert datetime.timedelta(0) <= age < datetime.timedelta(minutes=2)
+
+
+async def test_send_object_item_bulletin(client, proto):
+    """#24"""
+    position = Position(lat=46.2, long=-122.19, symbol_code=b"+")
+    when = datetime.datetime(2026, 11, 9, 23, 45, tzinfo=datetime.UTC)
+    client.send_object("AID1", position, "Aid station", timestamp=when)
+    client.send_object("AID1", position, killed=True, timestamp=when)
+    client.send_item("TENT", position, "first aid")
+    client.send_bulletin("Net tonight at 7 PM", id="1")
+    assert proto.written == [
+        f"{ME}>APZ069,WIDE1-1:;AID1     *092345z4612.00N/12211.40W+Aid station",
+        f"{ME}>APZ069,WIDE1-1:;AID1     _092345z4612.00N/12211.40W+",
+        f"{ME}>APZ069,WIDE1-1:)TENT!4612.00N/12211.40W+first aid",
+        f"{ME}>APZ069,WIDE1-1::BLN1     :Net tonight at 7 PM",
+    ]
+    info = APRSFrame.from_str(proto.written[0]).info
+    assert isinstance(info, ObjectReport) and info.name == b"AID1"
+
+
+async def test_send_any_info(client, proto):
+    """#24"""
+    info = InformationField.from_bytes(b">raw status")
+    frame = client.send(info, path="WIDE2-2")
+    assert str(frame) == proto.written[0] == f"{ME}>APZ069,WIDE2-2:>raw status"
+
+
+# --- #25: connection URLs ---
+
+
+@pytest.mark.parametrize(
+    ("url", "kind", "args"),
+    [
+        (
+            "aprsis://rotate.aprs2.net:14580?passcode=12345&filter=r/47/-122/50",
+            "aprsis",
+            ("N0CALL", "rotate.aprs2.net", 14580, "12345", "r/47/-122/50"),
+        ),
+        ("aprsis://localhost", "aprsis", ("N0CALL", "localhost", 14580, "-1", None)),
+        ("kiss+tcp://localhost:8002", "kiss_tcp", ("localhost", 8002, None)),
+        ("tcp://localhost", "kiss_tcp", ("localhost", 8001, None)),
+        (
+            "kiss+serial:///dev/ttyUSB0?baud=1200",
+            "kiss_serial",
+            ("/dev/ttyUSB0", 1200, None),
+        ),
+        ("kiss+serial://COM3", "kiss_serial", ("COM3", 9600, None)),
+    ],
+)
+def test_connector_from_url(monkeypatch, url, kind, args):
+    from base_aprs_client import aio
+
+    calls = []
+    monkeypatch.setattr(aio, f"{kind}_connector", lambda *a: calls.append(a) or "c")
+    assert aio.connector_from_url(url, "N0CALL") == "c"
+    assert calls == [args]
+
+
+def test_connector_from_url_overrides(monkeypatch):
+    from base_aprs_client import aio
+
+    calls = []
+    monkeypatch.setattr(aio, "aprsis_connector", lambda *a: calls.append(a))
+    aio.connector_from_url("aprsis://h?passcode=1", "N0CALL", passcode=2, filter="m/5")
+    assert calls == [("N0CALL", "h", 14580, "2", "m/5")]
+
+
+@pytest.mark.parametrize(
+    "url", ["http://example.com", "aprsis://", "kiss+tcp://:8001", "kiss+serial://"]
+)
+def test_connector_from_bad_url(url):
+    from base_aprs_client.aio import connector_from_url
+
+    with pytest.raises(ValueError):
+        connector_from_url(url, "N0CALL")

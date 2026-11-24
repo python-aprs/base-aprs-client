@@ -1,7 +1,7 @@
 import threading
 
 import pytest
-from aprs import Position
+from aprs import Position, StatusReport
 
 from base_aprs_client.client import OverflowDisposition
 
@@ -174,3 +174,55 @@ def test_send_starts_the_client(server):
     finally:
         a.close()
         b.close()
+
+
+# --- api-review additions ---
+
+
+def test_handlers_and_on_transmit(client1, client2):
+    """#26, #23: decorators on the sync client run as frames are decoded."""
+    frames, messages, sent = [], [], []
+
+    @client2.add_frame_handler
+    def frame_handler(frame):
+        frames.append(frame)
+
+    @client2.add_message_handler
+    def message_handler(message, frame):
+        messages.append(message.text)
+
+    client1.on_transmit(sent.append)
+    client1.send_message(client2.mycall, "decorated")
+    # these clients share their transport's loop, which runs inside calls
+    client2.read(min_frames=1)
+    assert messages == [b"decorated"]
+    assert frames and frames[0].info.text == b"decorated"
+    assert [f.info.text for f in sent] == [b"decorated"]
+
+
+def test_send_object_and_bulletin(client1, client2):
+    client1.send_object("AID1", Position(lat=46.2, long=-122.19), "Aid station")
+    client1.send_bulletin("hello all")
+    frames = client2.read(min_frames=2)
+    assert frames[0].info.name == b"AID1"
+    assert frames[1].info.addressee == b"BLN0"
+
+
+def test_connect_url(server):
+    from base_aprs_client import Client
+
+    url = f"aprsis://{server.host}:{server.port}"
+    with (
+        Client.connect("N0CALL-5", url, reconnect=None) as a,
+        Client.connect("N0CALL-6", url, reconnect=None) as b,
+    ):
+        server.wait_for_clients(2)
+        got = threading.Event()
+        b.add_message_handler(lambda message, frame: got.set())
+        a.send_status("via url")
+        (frame,) = b.read(min_frames=1)
+        assert isinstance(frame.info, StatusReport)
+        assert frame.info.status == b"via url"
+        # threaded: the handler runs without a read()
+        a.send_message("N0CALL-6", "hi")
+        assert got.wait(5)
