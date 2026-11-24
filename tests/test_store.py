@@ -202,3 +202,18 @@ async def test_add_several_records_in_one_session(store):
             [PacketRecord(tnc2=STATUS, state=PacketState.RECEIVED) for _ in range(3)]
         )
     assert len(await store.history()) == 3
+
+
+NOT_UTF8_INFO = b">Temp 16.4\xb0C \xd6\xb1\xc6\xb5"
+
+
+async def test_frames_that_are_not_utf8_are_kept_exactly(store):
+    """Latin-1/CP437/GBK comments used to fail the whole batch at commit."""
+    frame = APRSFrame.ui(
+        destination="APRS", source="N0CALL", path=["qAR", "K1ABC"], info=NOT_UTF8_INFO
+    )
+    records = await store.record_received_many([frame, APRSFrame.from_str(STATUS)])
+    assert len(records) == 2
+    (second, first) = await store.history()  # newest first
+    assert first.tnc2 == str(frame) and second.tnc2 == STATUS
+    assert bytes(first.frame.info) == NOT_UTF8_INFO

@@ -383,13 +383,15 @@ class AsyncClient:
             if self.connector is None:
                 raise ValueError("AsyncClient needs a connector or a protocol")
             protocol = await self.connector()
+        if self.store is not None:
+            # before the reader starts: it logs every frame to the store
+            await self.store.create_all()
+            self._unrecorded = collections.deque(maxlen=self.max_queued_frames or None)
+            self._record_wakeup = asyncio.Event()
         self._started = True
         self._set_protocol(protocol)
         self._spawn(self._run_reader())
         if self.store is not None:
-            await self.store.create_all()
-            self._unrecorded = collections.deque(maxlen=self.max_queued_frames or None)
-            self._record_wakeup = asyncio.Event()
             self._recorder = self._spawn(self._run_recorder())
             self._sender = self._spawn(self._run_sender())
         return self
@@ -543,9 +545,23 @@ class AsyncClient:
                 try:
                     await store.record_received_many(heard)
                 except Exception:  # pylint: disable=broad-except
-                    logger.exception("Could not log %d received frame(s)", len(heard))
+                    await self._record_one_by_one(store, heard)
             if self._closing and not self._unrecorded:
                 return
+
+    async def _record_one_by_one(self, store: "PacketStore", heard: list) -> None:
+        """Log a batch that failed frame by frame, so one bad frame loses only itself."""
+        failed = 0
+        for item in heard:
+            try:
+                await store.record_received_many([item])
+            except Exception:  # pylint: disable=broad-except
+                failed += 1
+                self.unlogged_frames += 1
+                if failed == 1:
+                    logger.exception("Could not log received frame %s", item[0])
+        if failed:
+            logger.error("Could not log %d of %d received frame(s)", failed, len(heard))
 
     def _handle_message(self, message: Message, frame: APRSFrame) -> bool:
         """Ack, resolve outstanding messages; False if ``message`` is a duplicate."""

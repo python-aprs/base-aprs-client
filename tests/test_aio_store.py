@@ -95,7 +95,8 @@ async def test_log_failure_does_not_stop_receiving(caplog, db_url):
     await settle()
     assert [str(f) for f in client.recv_nowait()] == [status(1), status(2)]
     await client.close()
-    assert "Could not log 1 received frame(s)" in caplog.text
+    assert "Could not log 1 of 1 received frame(s)" in caplog.text
+    assert client.unlogged_frames == 2
     await store.close()
 
 
@@ -114,4 +115,47 @@ async def test_close_does_not_break_the_store():
     await settle(2)  # the send-queue loop is in its first query now
     await asyncio.wait_for(client.close(), 5)
     assert await asyncio.wait_for(received(store), 5) == [status(1)]
+    await store.close()
+
+
+async def test_frames_waiting_at_start_are_logged(db_url):
+    """Frames that arrive before start() finishes setting up the store are logged.
+
+    The reader used to start before the store's queue existed, so a frame
+    already waiting (any busy feed) killed the reader while start() awaited
+    create_all(): nothing more was received or logged.
+    """
+    store = PacketStore(db_url)
+    proto: Any = FakeProtocol()
+    for n in range(3):
+        proto.feed(status(n))
+    client = AsyncClient(ME, reconnect=None, store=store)
+    await client.start(proto)
+    proto.feed(status(3))
+    await settle()
+    assert [str(f) for f in client.recv_nowait()] == [status(n) for n in range(4)]
+    await client.close()
+    assert await received(store) == [status(n) for n in range(4)]
+    await store.close()
+
+
+async def test_one_bad_frame_loses_only_itself(caplog, db_url):
+    class PickyStore(PacketStore):
+        async def record_received_many(self, heard):
+            heard = list(heard)
+            if any("bad" in str(frame) for frame, _ in heard):
+                raise ValueError("can't store this one")
+            return await super().record_received_many(heard)
+
+    store = PickyStore(db_url)
+    proto: Any = FakeProtocol()
+    client = AsyncClient(ME, reconnect=None, store=store)
+    await client.start(proto)
+    for text in ("one", "bad", "three"):
+        proto.feed(f"N0CALL-1>APZ069:>{text}")
+    await settle()
+    await client.close()
+    assert await received(store) == ["N0CALL-1>APZ069:>one", "N0CALL-1>APZ069:>three"]
+    assert client.unlogged_frames == 1
+    assert "Could not log 1 of 3 received frame(s)" in caplog.text
     await store.close()
