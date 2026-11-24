@@ -17,7 +17,7 @@ from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 
 from aprs import APRSFrame
-from sqlalchemy import DateTime, Index, String, TypeDecorator, select, update
+from sqlalchemy import DateTime, Index, String, TypeDecorator, insert, select, update
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -184,20 +184,26 @@ class PacketStore:
         calling ``record_received`` for each frame: most of the cost of a
         write is the transaction, not the row.
         """
-        records = []
+        rows = []
         for item in heard:
             frame, when = item if isinstance(item, tuple) else (item, None)
-            records.append(
-                PacketRecord(
-                    tnc2=str(frame),
-                    state=PacketState.RECEIVED,
-                    created=_as_utc(when) if when else utcnow(),
-                )
+            rows.append(
+                {
+                    "tnc2": str(frame),
+                    "state": PacketState.RECEIVED,
+                    "created": _as_utc(when) if when else utcnow(),
+                }
             )
-        if records:
-            async with self.session() as session:
-                session.add_all(records)
-        return records
+        if not rows:
+            return []
+        # A bulk INSERT ... RETURNING, a few statements per batch. add_all()
+        # (and RETURNING with sort_by_parameter_order) send SQLite one
+        # statement per row, each a trip to aiosqlite's thread: ~5x the CPU.
+        # RETURNING order is unspecified, but ids are assigned in row order.
+        statement = insert(PacketRecord).returning(PacketRecord)
+        async with self.session() as session:
+            records = (await session.scalars(statement, rows)).all()
+        return sorted(records, key=lambda record: record.id or 0)
 
     async def record_sent(
         self, frame: APRSFrame | str, when: datetime.datetime | None = None
