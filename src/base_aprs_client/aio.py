@@ -383,13 +383,15 @@ class AsyncClient:
             if self.connector is None:
                 raise ValueError("AsyncClient needs a connector or a protocol")
             protocol = await self.connector()
+        if self.store is not None:
+            # before the reader starts: it logs every frame to the store
+            await self.store.create_all()
+            self._unrecorded = collections.deque(maxlen=self.max_queued_frames or None)
+            self._record_wakeup = asyncio.Event()
         self._started = True
         self._set_protocol(protocol)
         self._spawn(self._run_reader())
         if self.store is not None:
-            await self.store.create_all()
-            self._unrecorded = collections.deque(maxlen=self.max_queued_frames or None)
-            self._record_wakeup = asyncio.Event()
             self._recorder = self._spawn(self._run_recorder())
             self._sender = self._spawn(self._run_sender())
         return self

@@ -115,3 +115,24 @@ async def test_close_does_not_break_the_store():
     await asyncio.wait_for(client.close(), 5)
     assert await asyncio.wait_for(received(store), 5) == [status(1)]
     await store.close()
+
+
+async def test_frames_waiting_at_start_are_logged(db_url):
+    """Frames that arrive before start() finishes setting up the store are logged.
+
+    The reader used to start before the store's queue existed, so a frame
+    already waiting (any busy feed) killed the reader while start() awaited
+    create_all(): nothing more was received or logged.
+    """
+    store = PacketStore(db_url)
+    proto: Any = FakeProtocol()
+    for n in range(3):
+        proto.feed(status(n))
+    client = AsyncClient(ME, reconnect=None, store=store)
+    await client.start(proto)
+    proto.feed(status(3))
+    await settle()
+    assert [str(f) for f in client.recv_nowait()] == [status(n) for n in range(4)]
+    await client.close()
+    assert await received(store) == [status(n) for n in range(4)]
+    await store.close()
