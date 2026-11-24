@@ -181,3 +181,12 @@ async def test_requeue_failed_record(store):
     assert fetched is not None and fetched.due == later.replace(
         microsecond=later.microsecond
     )
+
+
+async def test_add_several_records_in_one_session(store):
+    # needs the primary key declared NOT NULL (SQLAlchemy's insertmanyvalues)
+    async with store.session() as session:
+        session.add_all(
+            [PacketRecord(tnc2=STATUS, state=PacketState.RECEIVED) for _ in range(3)]
+        )
+    assert len(await store.history()) == 3

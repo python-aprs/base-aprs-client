@@ -97,7 +97,9 @@ class PacketRecord(Base):
     """For QUEUED records, when the frame should be transmitted."""
     sent: Mapped[datetime.datetime | None] = mapped_column(default=None)
     error: Mapped[str | None] = mapped_column(default=None)
-    id: Mapped[int | None] = mapped_column(primary_key=True, default=None)
+    # nullable=False: an autoincrement key is never NULL in the table, and
+    # SQLAlchemy needs to know that to insert several records at once
+    id: Mapped[int | None] = mapped_column(primary_key=True, default=None, nullable=False)
 
     @property
     def frame(self) -> APRSFrame:
