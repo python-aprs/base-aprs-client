@@ -23,7 +23,7 @@ from collections.abc import Callable
 from typing import Any
 
 import attrs
-from aprs import APRSFrame, DataType, Message, Position, PositionReport
+from aprs import APRSFrame, Message, Position
 from aprs.position import PositionMixin
 
 from base_aprs_client import (
@@ -96,32 +96,18 @@ class Settings:
         """An AsyncClient for this connection; not started yet."""
         host, _, port = self.address.rpartition(":")
         if self.connection == "aprsis":
-            return _NetClient.aprsis(
+            return AsyncClient.aprsis(
                 self.mycall, host, int(port or 14580), self.passcode, **kwargs
             )
         if self.connection == "kiss_tcp":
-            return _NetClient.kiss_tcp(
+            return AsyncClient.kiss_tcp(
                 self.mycall, host, int(port or 8001), default_path=self.path, **kwargs
             )
         if self.connection == "kiss_serial":
-            return _NetClient.kiss_serial(
+            return AsyncClient.kiss_serial(
                 self.mycall, self.address, default_path=self.path, **kwargs
             )
         raise ValueError(f"unknown connection {self.connection!r}")
-
-
-@attrs.define
-class _NetClient(AsyncClient):
-    """An AsyncClient that reports every frame it transmits."""
-
-    on_transmit: Callable[[APRSFrame], None] | None = attrs.field(
-        default=None, kw_only=True
-    )
-
-    def write(self, frame: APRSFrame, record: bool = True) -> None:
-        super().write(frame, record)
-        if self.on_transmit is not None:
-            self.on_transmit(frame)
 
 
 @attrs.define
@@ -197,7 +183,8 @@ class Net:
             "retry_period": self.settings.message_retry_minutes * 60,
             **self.client_options,
         }
-        client = self.settings.client(on_transmit=self._transmitted, **options)
+        client = self.settings.client(**options)
+        client.on_transmit(self._transmitted)
         client.on_frame(self._heard)
         client.on_message(self._message)
         await client.start()
@@ -545,13 +532,7 @@ class Net:
         """Stop resending a message that hasn't been acked yet."""
         if entry.future is None or entry.future.done():
             return False
-        if self.client is not None:
-            for number, om in list(self.client.outstanding.items()):
-                if om.future is entry.future:
-                    if om.timer is not None:
-                        om.timer.cancel()
-                    del self.client.outstanding[number]
-        entry.future.cancel()  # _ack marks it cancelled
+        entry.future.cancel()  # stops the retries; _ack marks it cancelled
         return True
 
     def _ack(self, future: asyncio.Future, entry: SentMessage) -> None:
@@ -580,19 +561,15 @@ class Net:
         assert self.client is not None
         s = self.settings
         table, symbol = (s.beacon_symbol + "  ")[:2].encode()
-        report = PositionReport(
-            raw=b"",
-            data_type=DataType.POSITION_W_O_TIMESTAMP_MSG,
-            data=b"",
-            position=Position(
+        self.client.send_position(
+            Position(
                 lat=s.beacon_lat or 0.0,
                 long=s.beacon_lon or 0.0,
                 sym_table_id=bytes([table]),
                 symbol_code=bytes([symbol]),
             ),
-            comment=s.beacon_comment.encode(),
+            comment=s.beacon_comment,
         )
-        self.client.write(self.client.prepare_frame(report))
 
     def checkins_csv(self) -> str:
         out = io.StringIO()

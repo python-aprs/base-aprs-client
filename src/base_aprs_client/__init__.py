@@ -26,6 +26,15 @@ N0CALL-1 says see you at the net
 
 ``Client.aprsis``, ``Client.kiss_tcp`` and ``Client.kiss_serial`` (and the
 same constructors on ``AsyncClient``) connect to APRS-IS or a KISS TNC.
+``connect`` takes a URL instead: ``aprsis://rotate.aprs2.net?passcode=12345``,
+``kiss+tcp://localhost:8001`` or ``kiss+serial:///dev/ttyUSB0?baud=9600``.
+
+A bot answers each message with ``messages()``, which leaves out acks and
+duplicates, and ``reply()``::
+
+    async with AsyncClient.connect("N0CALL-1", "kiss+tcp://localhost:8001") as client:
+        async for frame in client.messages():
+            await client.reply(frame, "pong", ack=True)
 """
 
 from importlib.metadata import version
