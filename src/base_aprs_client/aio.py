@@ -228,6 +228,7 @@ def _same_station(a: str, b: str) -> bool:
 
 
 def _is_ack(message: Message) -> bool:
+    """An ack or reject (``ack2A``, ``rej2A``) rather than a message."""
     return message.number is None and parse_ack(message.text) is not None
 
 
@@ -523,7 +524,8 @@ class AsyncClient:
         )
         if to_me and not self._handle_message(info, frame):
             return  # duplicate
-        self._deliver(frame, to_me)
+        # acks and rejects resolve futures; message handlers don't see them
+        self._deliver(frame, to_me and not _is_ack(info))
         if to_me and not _is_ack(info):
             for queue in self._message_queues:
                 queue.put_nowait(frame)
@@ -602,7 +604,12 @@ class AsyncClient:
         return handler
 
     def on_message(self, handler: MessageHandler) -> MessageHandler:
-        """Call ``handler(message, frame)`` for each message to ``mycall``, once."""
+        """
+        Call ``handler(message, frame)`` for each message to ``mycall``, once.
+
+        Acks and rejects aren't passed: they resolve the futures from
+        ``send_message``. Watch them with ``on_frame`` if needed.
+        """
         self.message_handlers.append(handler)
         return handler
 

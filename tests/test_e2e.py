@@ -247,7 +247,7 @@ def test_threaded_client(sim):
         assert a.connected
         (maf,) = a.submit_message("BRAVO", "from a thread")
         ack = maf.result(timeout=5)
-        assert str(ack.source) == "BRAVO"
+        assert ack is not None and str(ack.source) == "BRAVO"
         assert maf.done()
         frames = b.read(min_frames=1)
         assert bytes(frames[0].info).startswith(b":BRAVO    :from a thread{")

@@ -41,15 +41,17 @@ def test_message_overflow(client1, client2, ack):
 
 def test_message_ack(client1, client2):
     next_seq = client1.next_message_sequence_number
-    maf = client1.send_message(client2.mycall, "ack me back", ack=True)
+    (maf,) = client1.send_message(client2.mycall, "ack me back", ack=True)
     client2.read(min_frames=1)
     client1.read(min_frames=1)
     # reply-ack capable: the number ends in "}" and so does the ack
-    assert maf.result().info.text == b"ack%x}" % next_seq
+    ack = maf.result()
+    assert ack is not None and ack.info.text == b"ack%x}" % next_seq
     assert client2.messages[0].text == b"ack me back"
     assert client2.messages[0].number == b"%x}" % next_seq
-    assert client1.messages[0].text == b"ack%x}" % next_seq
-    assert client1.messages[0].number is None
+    # base-aprs-client#27: the ack reaches on_frame, not on_message
+    assert client1.frames[0].info.text == b"ack%x}" % next_seq
+    assert client1.messages == []
 
 
 def test_status(client1, client2):
@@ -84,7 +86,7 @@ def test_send_from_another_thread_while_idle(client1, client2):
 
 
 def test_ack_wait_from_another_thread(client1, client2):
-    maf = client1.send_message(client2.mycall, "ack me", ack=True)
+    (maf,) = client1.send_message(client2.mycall, "ack me", ack=True)
     result = []
     worker = threading.Thread(target=lambda: result.append(maf.result(timeout=5)))
     worker.start()
@@ -109,6 +111,71 @@ def test_client_call_from_loop_is_refused(client1, client2):
     assert errors
 
 
+# --- breaking changes from the API review ---
+
+
+def test_send_message_always_returns_a_list(client1, client2):
+    """#28: one part or many, with or without ack."""
+    import concurrent.futures
+
+    (plain,) = client1.send_message(client2.mycall, "no ack")
+    assert isinstance(plain, concurrent.futures.Future)
+    assert plain.done() and plain.result() is None
+    parts = client1.send_message(
+        client2.mycall, "word " * 20, ack=True, overflow=OverflowDisposition.Continue
+    )
+    assert len(parts) == 2
+    client2.read(min_frames=3)
+    client1.read(min_frames=2)
+    done, not_done = concurrent.futures.wait(parts, timeout=5)
+    assert not not_done
+    assert all(f.result().info.text.startswith(b"ack") for f in done)
+
+
+def test_message_ack_future_cancel(client1, client2):
+    (future,) = client1.send_message(client2.mycall, "never acked", ack=True)
+    seen = []
+    future.add_done_callback(seen.append)
+    assert future.cancel()
+    assert future.cancelled() and seen == [future]
+    assert not future.cancel()  # already done
+
+
+def test_constructor_does_not_connect():
+    """#29: nothing touches the network until start(), with, or a send."""
+    import socket
+
+    from base_aprs_client import Client
+
+    listener = socket.create_server(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    listener.close()  # nothing listens here now
+    client = Client.aprsis("N0CALL", "127.0.0.1", port, reconnect=None)
+    assert not client.connected
+    with pytest.raises(OSError):
+        client.start()
+    client.close()
+
+
+def test_send_starts_the_client(server):
+    from base_aprs_client import Client
+
+    a = Client.aprsis("N0CALL-5", server.host, server.port, reconnect=None)
+    b = Client.aprsis("N0CALL-6", server.host, server.port, reconnect=None)
+    try:
+        assert not a.connected
+        b.start()
+        a.send_status("lazy")  # starts a
+        assert a.connected
+        server.wait_for_clients(2)
+        a.send_status("lazy 2")
+        frames = b.read(min_frames=1)
+        assert frames[-1].info.raw.startswith(b">lazy")
+    finally:
+        a.close()
+        b.close()
+
+
 # --- api-review additions ---
 
 
@@ -116,11 +183,11 @@ def test_handlers_and_on_transmit(client1, client2):
     """#26, #23: decorators on the sync client run as frames are decoded."""
     frames, messages, sent = [], [], []
 
-    @client2.add_frame_handler
+    @client2.on_frame
     def frame_handler(frame):
         frames.append(frame)
 
-    @client2.add_message_handler
+    @client2.on_message
     def message_handler(message, frame):
         messages.append(message.text)
 
@@ -151,7 +218,7 @@ def test_connect_url(server):
     ):
         server.wait_for_clients(2)
         got = threading.Event()
-        b.add_message_handler(lambda message, frame: got.set())
+        b.on_message(lambda message, frame: got.set())
         a.send_status("via url")
         (frame,) = b.read(min_frames=1)
         assert isinstance(frame.info, StatusReport)

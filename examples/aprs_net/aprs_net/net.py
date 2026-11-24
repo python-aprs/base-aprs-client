@@ -32,7 +32,7 @@ from base_aprs_client import (
     MessageRejected,
     NotConnected,
 )
-from base_aprs_client.common import OverflowDisposition, parse_ack
+from base_aprs_client.common import OverflowDisposition
 
 log = logging.getLogger(__name__)
 
@@ -279,8 +279,6 @@ class Net:
         self._changed()
 
     def _message(self, message: Message, frame: APRSFrame) -> None:
-        if message.number is None and parse_ack(message.text):
-            return  # an ack for one of ours; the futures in send_message track it
         text = message.text.decode("utf-8", "replace")
         sender = base_call(str(frame.source))
         calls = [sender] + [c for c in CALLSIGN.findall(text.upper()) if c != sender]
