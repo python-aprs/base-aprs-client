@@ -64,16 +64,15 @@ def main(argv=None) -> int:
     name, conn_args, options = connection(args)
     options.update(retries=args.retries, retry_period=args.retry_period)
     with getattr(Client, name)(*conn_args, **options) as client:
-        result = client.send_message(
+        acks = client.send_message(
             args.to, args.text, ack=True, overflow=OverflowDisposition.Continue
         )
-        acks = result if isinstance(result, list) else [result]
         failed = False
         for ack in acks:
-            assert ack is not None  # always a future with ack=True
             print(f"sent: {client.prepare_frame(ack.message)}", flush=True)
             try:
                 frame = ack.result()
+                assert frame is not None  # sent with ack=True
                 print(f"acked by {frame.source}", flush=True)
             except MessageRejected as exc:
                 print(f"rejected: {exc}", flush=True)

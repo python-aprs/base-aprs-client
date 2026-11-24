@@ -17,7 +17,7 @@ background thread, so N0CALL-2 acks the message without being asked:
 ...         Client.aprsis("N0CALL-2", sim.host, sim.port) as bob,
 ...     ):
 ...         sim.wait_for_clients(2)
-...         ack = alice.send_message("N0CALL-2", "see you at the net", ack=True)
+...         (ack,) = alice.send_message("N0CALL-2", "see you at the net", ack=True)
 ...         print("acked by", ack.result(timeout=10).source)
 ...         (frame,) = bob.read(min_frames=1)
 ...         print(frame.source, "says", frame.info.text.decode())

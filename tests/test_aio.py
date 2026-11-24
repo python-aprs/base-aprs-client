@@ -420,3 +420,18 @@ async def test_frames_encode_as_ax25(client, path):
     """The last address carries the end-of-address bit, so TNCs can decode it."""
     frame = client.prepare_frame(InformationField.from_bytes(b">status"), path)
     assert str(APRSFrame.from_bytes(bytes(frame))) == str(frame)
+
+
+async def test_acks_are_not_passed_to_on_message(client, proto):
+    """base-aprs-client#27"""
+    messages, frames = [], []
+    client.on_message(lambda message, frame: messages.append(message.text))
+    client.on_frame(lambda frame: frames.append(frame.info.text))
+    (future,) = client.submit_message(PEER, "hi", ack=True)
+    proto.feed(incoming("ack2a"))
+    proto.feed(incoming("rej99"))
+    proto.feed(incoming("a real message"))
+    await settle(10)
+    assert future.done()
+    assert messages == [b"a real message"]
+    assert frames == [b"ack2a", b"rej99", b"a real message"]

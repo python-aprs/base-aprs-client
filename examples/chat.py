@@ -29,7 +29,7 @@ from aprs import APRSFrame, Message
 from send_message import add_connection_args, connection
 
 from base_aprs_client import AsyncClient, MaximumRetryExceeded, MessageRejected
-from base_aprs_client.common import OverflowDisposition, parse_ack
+from base_aprs_client.common import OverflowDisposition
 
 
 async def wait_for_ack(future: asyncio.Future, peer: str) -> None:
@@ -47,8 +47,6 @@ async def chat(client: AsyncClient, peer: str, lines: AsyncIterator[str]) -> Non
 
     @client.on_message
     def show(message: Message, frame: APRSFrame) -> None:
-        if message.number is None and parse_ack(message.text):
-            return  # a bare ack or reject; wait_for_ack reports those
         print(f"{frame.source}: {message.text.decode('utf-8', 'replace')}", flush=True)
 
     pending = set()
