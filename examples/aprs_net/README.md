@@ -3,7 +3,7 @@
 A web app for running an APRS net, built with [Reflex](https://reflex.dev) on
 `base-aprs-client`.
 
-![The net control page during a net](screenshot.png)
+![The net control page during a net](screenshot-net.png)
 
 Stations check in by sending any APRS message to net control. Each new
 station gets one reply ("ACK N0CALL, thanks for checking in to Tuesday Night
@@ -38,16 +38,23 @@ It connects to APRS-IS, a KISS TNC on TCP (Dire Wolf listens on
 
 ## Running it
 
+The app is its own [uv](https://docs.astral.sh/uv/) project, with its
+dependencies locked in `uv.lock` and `base-aprs-client` installed from this
+checkout:
+
 ```
 cd examples/aprs_net
-pip install -r requirements.txt
-reflex run
+uv run reflex run
 ```
+
+The first run creates `.venv` and builds the frontend, which takes a minute.
 
 Then open http://localhost:3000, enter your callsign and connection, and
 open the net. To transmit through APRS-IS you need the passcode for your
 callsign. With `-1` the net can hear check-ins but its replies are dropped by
 the server.
+
+![The setup form](screenshot-setup.png)
 
 Each browser remembers the settings of the last net it opened and fills
 them in next time. To fill in the form ahead of time on any browser, set
@@ -63,14 +70,14 @@ the browser take precedence over the environment.
 Run the local APRS-IS relay, and point the app at it:
 
 ```
-python -m base_aprs_client.simulator &
-APRS_NET_CALL=N0CALL-10 APRS_NET_ADDRESS=localhost:14588 reflex run
+uv run python -m base_aprs_client.simulator &
+APRS_NET_CALL=N0CALL-10 APRS_NET_ADDRESS=localhost:14588 uv run reflex run
 ```
 
 Then check in from another terminal with the chat example:
 
 ```
-python ../chat.py --call N0CALL-1 --to N0CALL-10 --aprsis localhost:14588
+uv run python ../chat.py --call N0CALL-1 --to N0CALL-10 --aprsis localhost:14588
 ```
 
 ## How it's put together
