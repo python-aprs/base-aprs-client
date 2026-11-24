@@ -21,6 +21,7 @@ import inspect
 import logging
 import random
 import typing as t
+import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
 import attrs
@@ -28,10 +29,14 @@ from aprs import (
     APRSFrame,
     DataType,
     InformationField,
+    ItemReport,
     Message,
+    ObjectReport,
     Position,
     PositionReport,
     StatusReport,
+    Timestamp,
+    TimestampFormat,
 )
 from aprs.aprsis import create_aprsis_connection
 from aprs.constants import APRSIS_FILTER_PORT, APRSIS_SERVERS
@@ -126,6 +131,55 @@ def kiss_serial_connector(
     return connect
 
 
+DEFAULT_KISS_TCP_PORT = 8001
+DEFAULT_SERIAL_BAUDRATE = 9600
+
+
+def connector_from_url(
+    url: str,
+    user: str,
+    *,
+    passcode: str | int | None = None,
+    filter: str | None = None,
+    kiss_settings: dict | None = None,
+) -> Connector:
+    """
+    A connector for a connection URL; ``user`` is the APRS-IS login.
+
+    - ``aprsis://rotate.aprs2.net:14580?passcode=12345&filter=r/47/-122/50``
+    - ``kiss+tcp://localhost:8001`` (a TNC such as Dire Wolf)
+    - ``kiss+serial:///dev/ttyUSB0?baud=9600`` (or ``kiss+serial://COM3``)
+
+    ``passcode`` and ``filter`` given here win over the URL's.
+    """
+    parts = urllib.parse.urlsplit(url)
+    query = dict(urllib.parse.parse_qsl(parts.query))
+    scheme = parts.scheme.lower()
+    if scheme == "aprsis":
+        if not parts.hostname:
+            raise ValueError(f"{url!r}: no APRS-IS host")
+        return aprsis_connector(
+            user,
+            parts.hostname,
+            parts.port or APRSIS_FILTER_PORT,
+            str(passcode if passcode is not None else query.get("passcode", "-1")),
+            filter if filter is not None else query.get("filter"),
+        )
+    if scheme in ("kiss+tcp", "tcp"):
+        if not parts.hostname:
+            raise ValueError(f"{url!r}: no TNC host")
+        return kiss_tcp_connector(
+            parts.hostname, parts.port or DEFAULT_KISS_TCP_PORT, kiss_settings
+        )
+    if scheme in ("kiss+serial", "serial"):
+        device = parts.netloc + parts.path
+        if not device:
+            raise ValueError(f"{url!r}: no serial device")
+        baud = int(query.get("baud", query.get("baudrate", DEFAULT_SERIAL_BAUDRATE)))
+        return kiss_serial_connector(device, baud, kiss_settings)
+    raise ValueError(f"{url!r}: expected an aprsis://, kiss+tcp:// or kiss+serial:// URL")
+
+
 @attrs.define
 class ReconnectPolicy:
     """Exponential backoff with jitter between reconnect attempts."""
@@ -173,6 +227,20 @@ def _same_station(a: str, b: str) -> bool:
     return a.strip().upper() == b.strip().upper()
 
 
+def _is_ack(message: Message) -> bool:
+    return message.number is None and parse_ack(message.text) is not None
+
+
+def _timestamp(when: datetime.datetime | bool) -> Timestamp:
+    """A day/hours/minutes zulu timestamp for ``when`` (True: now)."""
+    if when is True:
+        when = datetime.datetime.now(datetime.UTC)
+    assert isinstance(when, datetime.datetime)
+    if when.tzinfo is None:
+        when = when.astimezone()  # naive: local time
+    return Timestamp(TimestampFormat.DayHoursMinutesZulu, when.astimezone(datetime.UTC))
+
+
 @attrs.define(eq=False)
 class AsyncClient:
     """
@@ -212,6 +280,8 @@ class AsyncClient:
     connect_handlers: list[Callable[[FrameDecodeProtocol], t.Any]] = attrs.field(
         factory=list, init=False
     )
+    transmit_handlers: list[FrameHandler] = attrs.field(factory=list, init=False)
+    _message_queues: list[asyncio.Queue] = attrs.field(factory=list, init=False)
     dropped_frames: int = attrs.field(default=0, init=False)
     unlogged_frames: int = attrs.field(default=0, init=False)
     """Received frames not logged to the store because it fell too far behind."""
@@ -244,6 +314,32 @@ class AsyncClient:
         **kwargs: t.Any,
     ) -> "AsyncClient":
         connector = aprsis_connector(str(mycall), host, port, passcode, filter)
+        return cls(mycall=mycall, connector=connector, **kwargs)
+
+    @classmethod
+    def connect(
+        cls,
+        mycall: str,
+        url: str,
+        *,
+        passcode: str | int | None = None,
+        filter: str | None = None,
+        kiss_settings: dict | None = None,
+        **kwargs: t.Any,
+    ) -> "AsyncClient":
+        """
+        A client for a connection URL (see ``connector_from_url``)::
+
+            async with AsyncClient.connect("N0CALL-1", "kiss+tcp://localhost:8001") as c:
+                ...
+        """
+        connector = connector_from_url(
+            url,
+            str(mycall),
+            passcode=passcode,
+            filter=filter,
+            kiss_settings=kiss_settings,
+        )
         return cls(mycall=mycall, connector=connector, **kwargs)
 
     @classmethod
@@ -330,6 +426,8 @@ class AsyncClient:
             await asyncio.sleep(0)  # let the transport release the socket/port
         if self._frames is not None:
             self._frames.put_nowait(_CLOSED)
+        for queue in self._message_queues:
+            queue.put_nowait(_CLOSED)
 
     async def __aenter__(self) -> "AsyncClient":
         return await self.start()
@@ -381,6 +479,8 @@ class AsyncClient:
             self._connected.clear()
             if self._frames is not None:
                 self._frames.put_nowait(_CLOSED)
+            for queue in self._message_queues:
+                queue.put_nowait(_CLOSED)
 
     async def _reconnect(self) -> bool:
         if self.reconnect is None or self.connector is None:
@@ -424,6 +524,9 @@ class AsyncClient:
         if to_me and not self._handle_message(info, frame):
             return  # duplicate
         self._deliver(frame, to_me)
+        if to_me and not _is_ack(info):
+            for queue in self._message_queues:
+                queue.put_nowait(frame)
 
     async def _run_recorder(self) -> None:
         """Log received frames to the store, all waiting frames in one transaction."""
@@ -503,6 +606,33 @@ class AsyncClient:
         self.message_handlers.append(handler)
         return handler
 
+    def on_transmit(self, handler: FrameHandler) -> FrameHandler:
+        """Call ``handler(frame)`` (or await it) for every frame this client sends."""
+        self.transmit_handlers.append(handler)
+        return handler
+
+    async def messages(self) -> AsyncIterator[APRSFrame]:
+        """
+        Frames carrying a message to ``mycall``, each once, leaving out acks
+        and rejects (the client handles those). Ends when the client closes::
+
+            async for frame in client.messages():
+                await client.reply(frame, "got it")
+
+        Only messages that arrive after iteration starts are yielded; each
+        ``messages()`` iterator gets every message.
+        """
+        queue: asyncio.Queue = asyncio.Queue()
+        self._message_queues.append(queue)
+        try:
+            while not self._closing:
+                frame = await queue.get()
+                if frame is _CLOSED:
+                    return
+                yield frame
+        finally:
+            self._message_queues.remove(queue)
+
     async def recv(self, timeout: float | None = None) -> APRSFrame:
         """The next frame; raises EOFError once the client is closed."""
         frame = await asyncio.wait_for(self._frames.get(), timeout)
@@ -549,6 +679,8 @@ class AsyncClient:
         self.protocol.write(frame)
         if record and self.store is not None:
             self._spawn(self._record_sent(frame))
+        for handler in self.transmit_handlers:
+            self._call_handler(handler, frame)
 
     async def _record_sent(self, frame: APRSFrame) -> None:
         assert self.store is not None
@@ -641,6 +773,8 @@ class AsyncClient:
             period=self.retry_period,
         )
         self.outstanding[number] = om
+        # cancelling the future is the whole cancel API: stop the retries too
+        future.add_done_callback(lambda f, om=om: f.cancelled() and self._finish(om))
         try:
             self.write(self.prepare_frame(message, frame_path))
         except NotConnected:
@@ -718,19 +852,42 @@ class AsyncClient:
         return frame
 
     def send_position(
-        self, position: Position, path: list[Address] | str | None = None
+        self,
+        position: Position,
+        path: list[Address] | str | None = None,
+        *,
+        comment: str = "",
+        timestamp: datetime.datetime | bool | None = None,
+        messaging: bool = True,
     ) -> APRSFrame:
-        frame = self.prepare_frame(
+        """
+        Send a position report. ``timestamp=True`` stamps it with the
+        current time (or pass a ``datetime``); ``messaging`` says whether
+        this station receives messages (``=``/``@`` rather than ``!``/``/``).
+        """
+        if timestamp:
+            data_type = (
+                DataType.POSITION_W_TIMESTAMP_MSG
+                if messaging
+                else DataType.POSITION_W_TIMESTAMP_NO_MSG
+            )
+        else:
+            data_type = (
+                DataType.POSITION_W_O_TIMESTAMP_MSG
+                if messaging
+                else DataType.POSITION_W_O_TIMESTAMP
+            )
+        return self.send(
             PositionReport(
                 raw=b"",
-                data_type=DataType.POSITION_W_O_TIMESTAMP_MSG,
+                data_type=data_type,
                 data=b"",
                 position=position,
+                timestamp=_timestamp(timestamp) if timestamp else None,
+                comment=comment.encode(),
             ),
             path,
         )
-        self.write(frame)
-        return frame
 
     # -- delayed send queue --
 
@@ -754,6 +911,82 @@ class AsyncClient:
         if self._wakeup is not None:
             self._wakeup.set()
         return record
+
+    async def reply(
+        self,
+        frame: APRSFrame,
+        body: str,
+        ack: bool = False,
+        **kwargs: t.Any,
+    ) -> list[APRSFrame | None]:
+        """``send_message`` to the station that sent ``frame``."""
+        return await self.send_message(frame.source, body, ack=ack, **kwargs)
+
+    def send(
+        self, info: InformationField, path: list[Address] | str | None = None
+    ) -> APRSFrame:
+        """Frame ``info`` from ``mycall`` and transmit it now; returns the frame."""
+        frame = self.prepare_frame(info, path)
+        self.write(frame)
+        return frame
+
+    def send_object(
+        self,
+        name: str,
+        position: Position,
+        comment: str = "",
+        killed: bool = False,
+        timestamp: datetime.datetime | None = None,
+        path: list[Address] | str | None = None,
+    ) -> APRSFrame:
+        """
+        Send an object report: a named thing at ``position``, such as an
+        event or a net's location. ``killed=True`` removes it from maps.
+        """
+        return self.send(
+            ObjectReport(
+                raw=b"",
+                data_type=DataType.OBJECT,
+                data=b"",
+                name=name.encode(),
+                killed=killed,
+                timestamp=_timestamp(timestamp or True),
+                position=position,
+                comment=comment.encode(),
+            ),
+            path,
+        )
+
+    def send_item(
+        self,
+        name: str,
+        position: Position,
+        comment: str = "",
+        killed: bool = False,
+        path: list[Address] | str | None = None,
+    ) -> APRSFrame:
+        """Send an item report: like an object, without a timestamp."""
+        return self.send(
+            ItemReport(
+                raw=b"",
+                data_type=DataType.ITEM,
+                data=b"",
+                name=name.encode(),
+                killed=killed,
+                position=position,
+                comment=comment.encode(),
+            ),
+            path,
+        )
+
+    def send_bulletin(
+        self, text: str, id: str = "0", path: list[Address] | str | None = None
+    ) -> APRSFrame:
+        """
+        Send a bulletin to ``BLN<id>`` (``id`` "0"-"9", or a group name for
+        ``BLN<n><group>``). Bulletins aren't acked.
+        """
+        return self.send(self._message(f"BLN{id}", truncate_message(text), None), path)
 
     async def _run_sender(self) -> None:
         from .store import utcnow  # the db extra is optional

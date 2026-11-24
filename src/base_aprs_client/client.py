@@ -15,6 +15,7 @@ Two ways to use it:
 
 import asyncio
 import concurrent.futures
+import datetime
 import threading
 import time
 import typing as t
@@ -30,8 +31,11 @@ from .aio import (
     DEFAULT_DUPLICATE_WINDOW,
     AsyncClient,
     Connector,
+    FrameHandler,
+    MessageHandler,
     ReconnectPolicy,
     aprsis_connector,
+    connector_from_url,
     kiss_serial_connector,
     kiss_tcp_connector,
 )
@@ -290,6 +294,33 @@ class Client:
         return cls(mycall=mycall, connector=connector, **kwargs)
 
     @classmethod
+    def connect(
+        cls,
+        mycall: str,
+        url: str,
+        *,
+        passcode: str | int | None = None,
+        filter: str | None = None,
+        kiss_settings: dict | None = None,
+        **kwargs: t.Any,
+    ) -> "Client":
+        """
+        Connect from a URL (see ``AsyncClient.connect``); the client runs on
+        a background thread::
+
+            with Client.connect("N0CALL-1", "aprsis://rotate.aprs2.net?passcode=12345") as c:
+                ...
+        """
+        connector = connector_from_url(
+            url,
+            str(mycall),
+            passcode=passcode,
+            filter=filter,
+            kiss_settings=kiss_settings,
+        )
+        return cls(mycall=mycall, connector=connector, **kwargs)
+
+    @classmethod
     def kiss_tcp(
         cls,
         mycall: str,
@@ -381,6 +412,25 @@ class Client:
             self.on_frame(frame)
         return frames
 
+    def add_frame_handler(self, handler: FrameHandler) -> FrameHandler:
+        """
+        Call ``handler(frame)`` for every frame as it arrives, like
+        ``AsyncClient.on_frame``; usable as a decorator. With a background
+        thread (``Client.aprsis`` and friends), the handler runs on it.
+        """
+        return self._runner.call(self.aclient.on_frame, handler)
+
+    def add_message_handler(self, handler: MessageHandler) -> MessageHandler:
+        """
+        Call ``handler(message, frame)`` once for each message to ``mycall``
+        as it arrives, like ``AsyncClient.on_message``; usable as a decorator.
+        """
+        return self._runner.call(self.aclient.on_message, handler)
+
+    def on_transmit(self, handler: FrameHandler) -> FrameHandler:
+        """Call ``handler(frame)`` for every frame this client sends; usable as a decorator."""
+        return self._runner.call(self.aclient.on_transmit, handler)
+
     def on_frame(self, frame: APRSFrame) -> None:
         """Called by ``read()`` for every frame; calls ``on_message`` for ours."""
         info = frame.info
@@ -467,9 +517,62 @@ class Client:
         return self._runner.call(self.aclient.send_status, status, path)
 
     def send_position(
-        self, position: Position, path: list[Address] | str | None = None
+        self,
+        position: Position,
+        path: list[Address] | str | None = None,
+        *,
+        comment: str = "",
+        timestamp: datetime.datetime | bool | None = None,
+        messaging: bool = True,
     ) -> APRSFrame:
-        return self._runner.call(self.aclient.send_position, position, path)
+        """Send a position report (see ``AsyncClient.send_position``)."""
+        return self._runner.call(
+            self.aclient.send_position,
+            position,
+            path,
+            comment=comment,
+            timestamp=timestamp,
+            messaging=messaging,
+        )
+
+    def send(
+        self, info: InformationField, path: list[Address] | str | None = None
+    ) -> APRSFrame:
+        """Frame ``info`` from ``mycall`` and transmit it now; returns the frame."""
+        return self._runner.call(self.aclient.send, info, path)
+
+    def send_object(
+        self,
+        name: str,
+        position: Position,
+        comment: str = "",
+        killed: bool = False,
+        timestamp: datetime.datetime | None = None,
+        path: list[Address] | str | None = None,
+    ) -> APRSFrame:
+        """Send an object report (see ``AsyncClient.send_object``)."""
+        return self._runner.call(
+            self.aclient.send_object, name, position, comment, killed, timestamp, path
+        )
+
+    def send_item(
+        self,
+        name: str,
+        position: Position,
+        comment: str = "",
+        killed: bool = False,
+        path: list[Address] | str | None = None,
+    ) -> APRSFrame:
+        """Send an item report (see ``AsyncClient.send_item``)."""
+        return self._runner.call(
+            self.aclient.send_item, name, position, comment, killed, path
+        )
+
+    def send_bulletin(
+        self, text: str, id: str = "0", path: list[Address] | str | None = None
+    ) -> APRSFrame:
+        """Send a bulletin to ``BLN<id>`` (see ``AsyncClient.send_bulletin``)."""
+        return self._runner.call(self.aclient.send_bulletin, text, id, path)
 
     def schedule(
         self,
