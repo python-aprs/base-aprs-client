@@ -26,6 +26,9 @@ def test_message_overflow(client1, client2, ack):
         "Sparse is better than dense. "
         "Readability counts. "
     )
+    # parts are put back in order by number: start where four hex numbers sort
+    # (the random start could cross "f" -> "10" or wrap, which then failed)
+    client1.aclient.next_message_sequence_number = 0x2
     client1.send_message(
         client2.mycall, zen, ack=ack, overflow=OverflowDisposition.Continue
     )
