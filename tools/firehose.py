@@ -39,11 +39,12 @@ from pathlib import Path
 import attr
 import psutil
 from aprs import APRSFrame, InformationField
-from aprs.mic_e import MicEReport
 from aprs.aprsis import APRSTNC2Decode, _frame_from_line, create_aprsis_connection
+from aprs.mic_e import MicEReport
+from sqlalchemy import func, select
+
 from base_aprs_client import AsyncClient
 from base_aprs_client.store import PacketRecord, PacketStore
-from sqlalchemy import func, select
 
 MAX_SAMPLES = 5
 PROC = psutil.Process()
