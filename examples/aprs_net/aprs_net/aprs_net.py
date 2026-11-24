@@ -238,10 +238,13 @@ def checkin_edit_row(c: rx.Var) -> rx.Component:
 
 
 def checkin_row(c: rx.Var) -> rx.Component:
-    return rx.cond(
-        NetState.editing == c["callsign"],
-        checkin_edit_row(c),
-        checkin_view_row(c),
+    return rx.fragment(
+        rx.cond(
+            NetState.editing == c["callsign"],
+            checkin_edit_row(c),
+            checkin_view_row(c),
+        ),
+        key=c["callsign"],
     )
 
 
