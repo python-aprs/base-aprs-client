@@ -13,7 +13,7 @@ Install with the ``db`` extra: ``pip install base-aprs-client[db]``.
 
 import datetime
 import enum
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 
 from aprs import APRSFrame
@@ -97,7 +97,9 @@ class PacketRecord(Base):
     """For QUEUED records, when the frame should be transmitted."""
     sent: Mapped[datetime.datetime | None] = mapped_column(default=None)
     error: Mapped[str | None] = mapped_column(default=None)
-    id: Mapped[int | None] = mapped_column(primary_key=True, default=None)
+    # nullable=False: an autoincrement key is never NULL in the table, and
+    # SQLAlchemy needs to know that to insert several records at once
+    id: Mapped[int | None] = mapped_column(primary_key=True, default=None, nullable=False)
 
     @property
     def frame(self) -> APRSFrame:
@@ -170,6 +172,32 @@ class PacketStore:
                 created=_as_utc(when) if when else utcnow(),
             )
         )
+
+    async def record_received_many(
+        self,
+        heard: Iterable[APRSFrame | str | tuple[APRSFrame | str, datetime.datetime]],
+    ) -> list[PacketRecord]:
+        """
+        Log several received frames in one transaction.
+
+        Each item is a frame, or a ``(frame, when)`` pair. Much faster than
+        calling ``record_received`` for each frame: most of the cost of a
+        write is the transaction, not the row.
+        """
+        records = []
+        for item in heard:
+            frame, when = item if isinstance(item, tuple) else (item, None)
+            records.append(
+                PacketRecord(
+                    tnc2=str(frame),
+                    state=PacketState.RECEIVED,
+                    created=_as_utc(when) if when else utcnow(),
+                )
+            )
+        if records:
+            async with self.session() as session:
+                session.add_all(records)
+        return records
 
     async def record_sent(
         self, frame: APRSFrame | str, when: datetime.datetime | None = None
