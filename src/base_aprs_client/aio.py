@@ -14,7 +14,9 @@ logs every frame to a ``PacketStore`` and transmits its delayed send queue::
 """
 
 import asyncio
+import collections
 import contextlib
+import datetime
 import inspect
 import logging
 import random
@@ -211,6 +213,8 @@ class AsyncClient:
         factory=list, init=False
     )
     dropped_frames: int = attrs.field(default=0, init=False)
+    unlogged_frames: int = attrs.field(default=0, init=False)
+    """Received frames not logged to the store because it fell too far behind."""
 
     _frames: asyncio.Queue = attrs.field(init=False, default=None)
     _connected: asyncio.Event = attrs.field(init=False, default=None)
@@ -219,6 +223,10 @@ class AsyncClient:
     _seen: dict[tuple, float] = attrs.field(factory=dict, init=False)
     _reply_ack_stations: set[str] = attrs.field(factory=set, init=False)
     _pending_reply_acks: dict[str, bytes] = attrs.field(factory=dict, init=False)
+    _unrecorded: collections.deque = attrs.field(init=False, default=None)
+    """Received frames waiting to be logged to the store, with when they arrived."""
+    _record_wakeup: asyncio.Event = attrs.field(init=False, default=None)
+    _recorder: asyncio.Task | None = attrs.field(init=False, default=None)
     _started: bool = attrs.field(default=False, init=False)
     _closing: bool = attrs.field(default=False, init=False)
 
@@ -282,6 +290,9 @@ class AsyncClient:
         self._spawn(self._run_reader())
         if self.store is not None:
             await self.store.create_all()
+            self._unrecorded = collections.deque(maxlen=self.max_queued_frames or None)
+            self._record_wakeup = asyncio.Event()
+            self._recorder = self._spawn(self._run_recorder())
             self._spawn(self._run_sender())
         return self
 
@@ -293,10 +304,18 @@ class AsyncClient:
         for om in list(self.outstanding.values()):
             self._finish(om)
             om.future.cancel()
-        tasks = [task for task in self._tasks if task is not asyncio.current_task()]
+        tasks = [
+            task
+            for task in self._tasks
+            if task is not asyncio.current_task() and task is not self._recorder
+        ]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self._recorder is not None:
+            # nothing more is received now: log what was, then stop
+            self._record_wakeup.set()
+            await asyncio.gather(self._recorder, return_exceptions=True)
         if self.protocol is not None and self.protocol.transport is not None:
             self.protocol.transport.close()
             await asyncio.sleep(0)  # let the transport release the socket/port
@@ -376,10 +395,19 @@ class AsyncClient:
         if not isinstance(frame, APRSFrame):
             return
         if self.store is not None:
-            try:
-                await self.store.record_received(frame)
-            except Exception:  # pylint: disable=broad-except
-                logger.exception("Could not log received frame %s", frame)
+            # logged in batches by _run_recorder, so a slow database never
+            # holds up receiving
+            unrecorded = self._unrecorded
+            if unrecorded.maxlen is not None and len(unrecorded) == unrecorded.maxlen:
+                self.unlogged_frames += 1
+                if self.unlogged_frames == 1 or self.unlogged_frames % 1000 == 0:
+                    logger.warning(
+                        "Packet log is %d frames behind: %d oldest not logged so far",
+                        unrecorded.maxlen,
+                        self.unlogged_frames,
+                    )
+            unrecorded.append((frame, datetime.datetime.now(datetime.UTC)))
+            self._record_wakeup.set()
         info = frame.info
         to_me = isinstance(info, Message) and _same_station(
             info.addressee.decode("latin1"), str(self.mycall)
@@ -387,6 +415,23 @@ class AsyncClient:
         if to_me and not self._handle_message(info, frame):
             return  # duplicate
         self._deliver(frame, to_me)
+
+    async def _run_recorder(self) -> None:
+        """Log received frames to the store, all waiting frames in one transaction."""
+        store = self.store
+        assert store is not None
+        while True:
+            await self._record_wakeup.wait()
+            self._record_wakeup.clear()
+            heard = list(self._unrecorded)
+            self._unrecorded.clear()
+            if heard:
+                try:
+                    await store.record_received_many(heard)
+                except Exception:  # pylint: disable=broad-except
+                    logger.exception("Could not log %d received frame(s)", len(heard))
+            if self._closing and not self._unrecorded:
+                return
 
     def _handle_message(self, message: Message, frame: APRSFrame) -> bool:
         """Ack, resolve outstanding messages; False if ``message`` is a duplicate."""

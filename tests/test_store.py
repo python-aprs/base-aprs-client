@@ -183,6 +183,18 @@ async def test_requeue_failed_record(store):
     )
 
 
+async def test_record_received_many(store):
+    when = datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
+    records = await store.record_received_many(
+        [APRSFrame.from_str(STATUS), (MESSAGE, when)]
+    )
+    assert [r.state for r in records] == [PacketState.RECEIVED] * 2
+    assert len({r.id for r in records}) == 2 and None not in {r.id for r in records}
+    assert records[1].created == when
+    assert [r.tnc2 for r in await store.history()] == [STATUS, MESSAGE]
+    assert await store.record_received_many([]) == []
+
+
 async def test_add_several_records_in_one_session(store):
     # needs the primary key declared NOT NULL (SQLAlchemy's insertmanyvalues)
     async with store.session() as session:
