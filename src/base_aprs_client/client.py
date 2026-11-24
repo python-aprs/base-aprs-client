@@ -255,8 +255,8 @@ class Client:
     Sends messages with ack and retry, acks incoming messages addressed to
     ``mycall``, and sends status and position reports.
 
-    Subclasses may override ``on_frame(frame)`` and ``on_message(message,
-    frame)``; they are called from ``read()`` for each frame it returns.
+    Register handlers with ``on_frame``, ``on_message`` and ``on_transmit``,
+    as on ``AsyncClient``; each is usable as a decorator.
     """
 
     mycall: Address = attrs.field(converter=Address.from_any)
@@ -443,7 +443,7 @@ class Client:
     @_autostart
     def read(self, min_frames: int | None = -1) -> list[APRSFrame]:
         """
-        Frames received since the last read, calling ``on_frame`` for each.
+        Frames received since the last read.
 
         ``min_frames=-1`` returns what has arrived without waiting; a number
         waits for at least that many; None reads until the client closes.
@@ -461,43 +461,30 @@ class Client:
                 frames.extend(self.aclient.recv_nowait())
             return frames
 
-        frames = self._runner.run(_read())
-        for frame in frames:
-            self.on_frame(frame)
-        return frames
+        return self._runner.run(_read())
 
-    def add_frame_handler(self, handler: FrameHandler) -> FrameHandler:
+    def on_frame(self, handler: FrameHandler) -> FrameHandler:
         """
         Call ``handler(frame)`` for every frame as it arrives, like
-        ``AsyncClient.on_frame``; usable as a decorator. With a background
-        thread (``Client.aprsis`` and friends), the handler runs on it.
+        ``AsyncClient.on_frame``; usable as a decorator.
+
+        With a background thread (``Client.aprsis`` and friends) the handler
+        runs on that thread; with an inline loop, during this client's calls
+        (``read()``, sends).
         """
         return self._runner.call(self.aclient.on_frame, handler)
 
-    def add_message_handler(self, handler: MessageHandler) -> MessageHandler:
+    def on_message(self, handler: MessageHandler) -> MessageHandler:
         """
         Call ``handler(message, frame)`` once for each message to ``mycall``
         as it arrives, like ``AsyncClient.on_message``; usable as a decorator.
+        Acks and rejects aren't passed: they resolve ``send_message`` futures.
         """
         return self._runner.call(self.aclient.on_message, handler)
 
     def on_transmit(self, handler: FrameHandler) -> FrameHandler:
         """Call ``handler(frame)`` for every frame this client sends; usable as a decorator."""
         return self._runner.call(self.aclient.on_transmit, handler)
-
-    def on_frame(self, frame: APRSFrame) -> None:
-        """Called by ``read()`` for every frame; calls ``on_message`` for ours."""
-        info = frame.info
-        if (
-            isinstance(info, Message)
-            and info.addressee.decode("latin1").strip().upper()
-            == str(self.mycall).upper()
-            and not (info.number is None and parse_ack(info.text))
-        ):
-            self.on_message(info, frame)
-
-    def on_message(self, message: Message, frame: APRSFrame) -> None:
-        """Called by ``read()`` for each message to ``mycall``, without acks or rejects."""
 
     # -- sending --
 

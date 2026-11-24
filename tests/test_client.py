@@ -183,11 +183,11 @@ def test_handlers_and_on_transmit(client1, client2):
     """#26, #23: decorators on the sync client run as frames are decoded."""
     frames, messages, sent = [], [], []
 
-    @client2.add_frame_handler
+    @client2.on_frame
     def frame_handler(frame):
         frames.append(frame)
 
-    @client2.add_message_handler
+    @client2.on_message
     def message_handler(message, frame):
         messages.append(message.text)
 
@@ -218,7 +218,7 @@ def test_connect_url(server):
     ):
         server.wait_for_clients(2)
         got = threading.Event()
-        b.add_message_handler(lambda message, frame: got.set())
+        b.on_message(lambda message, frame: got.set())
         a.send_status("via url")
         (frame,) = b.read(min_frames=1)
         assert isinstance(frame.info, StatusReport)

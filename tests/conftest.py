@@ -16,13 +16,10 @@ class FrameSavingClient(Client):
     frames = attrs.field(factory=list)
     messages = attrs.field(factory=list)
 
-    def on_frame(self, frame):
-        super().on_frame(frame)
-        self.frames.append(frame)
-
-    def on_message(self, message, frame):
-        super().on_message(message, frame)
-        self.messages.append(message)
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        self.on_frame(self.frames.append)
+        self.on_message(lambda message, frame: self.messages.append(message))
 
 
 def _client(server, mycall):
